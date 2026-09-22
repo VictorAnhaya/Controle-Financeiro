@@ -1,0 +1,5 @@
+# Recursos opcionais de importação e leitura de documentos.
+openpyxl
+pypdf
+Pillow
+pytesseract

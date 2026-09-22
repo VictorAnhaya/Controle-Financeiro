@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: bolotti-finance
+    runtime: docker
+    plan: 0.5c-512mb
+    dockerfilePath: ./Dockerfile
+    autoDeployTrigger: commit
+    healthCheckPath: /api/health
+    envVars:
+      - key: FINANCE_DATA_DIR
+        value: /var/data
+      - key: FINANCE_USERNAME
+        sync: false
+      - key: FINANCE_PASSWORD
+        sync: false
+    disk:
+      name: finance-data
+      mountPath: /var/data
+      sizeGB: 1

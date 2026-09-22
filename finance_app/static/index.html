@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Controle financeiro e de gastos do Grupo Bolotti Reis">
+  <title>Bolotti Finance</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark">BR</div>
+        <div><strong>Bolotti Finance</strong><span>Controle gerencial</span></div>
+      </div>
+
+      <nav class="nav" aria-label="Navegação principal">
+        <button class="nav-item active" data-view="dashboard"><span>⌂</span> Visão geral</button>
+        <button class="nav-item" data-view="transactions"><span>↕</span> Lançamentos</button>
+        <button class="nav-item" data-view="documents"><span>▱</span> Notas fiscais</button>
+        <button class="nav-item" data-view="ranking"><span>★</span> Ranking de clientes</button>
+        <button class="nav-item" data-view="budgets"><span>◎</span> Orçamentos</button>
+        <button class="nav-item" data-view="reports"><span>▤</span> Relatórios</button>
+      </nav>
+
+      <div class="sidebar-note">
+        <span class="status-dot"></span>
+        <div><strong>Dados locais</strong><small>Armazenados neste computador</small></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-button menu-button" id="menuButton" aria-label="Abrir menu">☰</button>
+        <div>
+          <p class="eyebrow">Grupo Bolotti Reis</p>
+          <h1 id="pageTitle">Visão geral</h1>
+        </div>
+        <div class="topbar-actions">
+          <label class="month-control">Período<input type="month" id="monthPicker"></label>
+          <button class="button secondary" id="importButton">Importar Excel</button>
+          <input type="file" id="importInput" accept=".xlsx" hidden>
+          <button class="button secondary" id="attachDocumentButton">Anexar nota</button>
+          <input type="file" id="documentInput" accept=".xml,.pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff" hidden>
+          <button class="button primary" id="newTransactionButton">+ Novo lançamento</button>
+        </div>
+      </header>
+
+      <section class="view active" id="dashboardView">
+        <div class="metric-grid">
+          <article class="metric-card income"><div class="metric-icon">↗</div><div><span>Receitas realizadas</span><strong id="incomeMetric">R$ 0,00</strong><small id="incomeCount">0 lançamentos</small></div></article>
+          <article class="metric-card expense"><div class="metric-icon">↘</div><div><span>Despesas pagas</span><strong id="expenseMetric">R$ 0,00</strong><small id="expenseCount">0 lançamentos</small></div></article>
+          <article class="metric-card balance"><div class="metric-icon">＝</div><div><span>Saldo do período</span><strong id="balanceMetric">R$ 0,00</strong><small>Receitas menos despesas</small></div></article>
+          <article class="metric-card payable"><div class="metric-icon">!</div><div><span>Contas a pagar</span><strong id="payableMetric">R$ 0,00</strong><small id="overdueCount">0 vencidas</small></div></article>
+        </div>
+
+        <div class="dashboard-grid">
+          <article class="panel flow-panel">
+            <div class="panel-header"><div><span class="panel-kicker">Movimentação diária</span><h2>Fluxo do mês</h2></div><div class="legend"><span><i class="blue"></i>Receitas</span><span><i class="red"></i>Despesas</span></div></div>
+            <canvas id="flowChart" height="250" aria-label="Gráfico de fluxo financeiro"></canvas>
+          </article>
+
+          <article class="panel category-panel">
+            <div class="panel-header"><div><span class="panel-kicker">Composição</span><h2>Gastos por categoria</h2></div></div>
+            <div class="donut-wrap"><canvas id="categoryChart" width="180" height="180"></canvas><div class="donut-center"><strong id="categoryTotal">R$ 0</strong><span>Total</span></div></div>
+            <div id="categoryLegend" class="category-legend empty-state">Cadastre despesas para visualizar.</div>
+          </article>
+        </div>
+
+        <div class="dashboard-grid lower">
+          <article class="panel">
+            <div class="panel-header"><div><span class="panel-kicker">Últimas movimentações</span><h2>Lançamentos recentes</h2></div><button class="text-button" data-go="transactions">Ver todos</button></div>
+            <div class="table-wrap"><table><thead><tr><th>Descrição</th><th>Data</th><th>Status</th><th class="align-right">Valor</th></tr></thead><tbody id="recentTable"></tbody></table></div>
+          </article>
+
+          <article class="panel budget-summary">
+            <div class="panel-header"><div><span class="panel-kicker">Planejamento</span><h2>Orçamento mensal</h2></div><button class="text-button" data-go="budgets">Configurar</button></div>
+            <div class="budget-ring" id="budgetRing"><div><strong id="budgetUsage">0%</strong><span>utilizado</span></div></div>
+            <div class="budget-values"><span>Gasto <strong id="budgetSpent">R$ 0,00</strong></span><span>Limite <strong id="budgetLimit">R$ 0,00</strong></span></div>
+            <p class="helper" id="budgetMessage">Defina limites por categoria para acompanhar o orçamento.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="transactionsView">
+        <article class="panel">
+          <div class="filter-bar">
+            <label>Buscar<input type="search" id="searchFilter" placeholder="Descrição, cliente ou documento"></label>
+            <label>Tipo<select id="kindFilter"><option value="">Todos</option><option value="income">Receitas</option><option value="expense">Despesas</option></select></label>
+            <label>Status<select id="statusFilter"><option value="">Todos</option><option value="paid">Pago/recebido</option><option value="pending">Pendente</option><option value="overdue">Vencido</option><option value="cancelled">Cancelado</option></select></label>
+            <label>Categoria<select id="categoryFilter"><option value="">Todas</option></select></label>
+            <button class="button secondary" id="clearFiltersButton">Limpar</button>
+          </div>
+          <div class="table-wrap transactions-table"><table><thead><tr><th>Data</th><th>Lançamento</th><th>Categoria</th><th>Status</th><th class="align-right">Valor</th><th></th></tr></thead><tbody id="transactionsTable"></tbody></table></div>
+          <div class="table-footer"><span id="transactionsCount">0 lançamentos</span><strong id="transactionsTotal">R$ 0,00</strong></div>
+        </article>
+      </section>
+
+      <section class="view" id="budgetsView">
+        <div class="two-column">
+          <article class="panel compact-form">
+            <span class="panel-kicker">Novo limite</span><h2>Orçamento por categoria</h2>
+            <form id="budgetForm">
+              <label>Categoria<input list="expenseCategories" name="category" required placeholder="Ex.: Tecnologia e sistemas"></label>
+              <label>Limite mensal (R$)<input name="limit" inputmode="decimal" required placeholder="0,00"></label>
+              <button class="button primary full" type="submit">Salvar orçamento</button>
+            </form>
+          </article>
+          <div id="budgetCards" class="budget-cards"></div>
+        </div>
+      </section>
+
+      <section class="view" id="documentsView">
+        <div class="documents-layout">
+          <article class="panel upload-panel">
+            <span class="panel-kicker">Leitura automática</span>
+            <h2>Anexar nota fiscal</h2>
+            <p>O aplicativo extrai número, data, emitente, CNPJ, valor e chave de acesso. Você confere os dados antes de gerar o lançamento.</p>
+            <button class="drop-zone" id="documentDropZone" type="button">
+              <span class="upload-icon">⇧</span>
+              <strong>Selecione ou arraste o arquivo</strong>
+              <small>XML, PDF, PNG, JPG, WEBP ou TIFF · máximo 15 MB</small>
+            </button>
+            <div class="format-notes">
+              <div><strong>XML</strong><span>Leitura estruturada, maior precisão</span></div>
+              <div><strong>PDF</strong><span>Extração do texto do documento</span></div>
+              <div><strong>Imagem</strong><span>Leitura OCR com conferência</span></div>
+            </div>
+          </article>
+
+          <article class="panel documents-list-panel">
+            <div class="panel-header"><div><span class="panel-kicker">Arquivo fiscal</span><h2>Documentos anexados</h2></div><span class="document-count" id="documentCount">0 documentos</span></div>
+            <div class="table-wrap"><table><thead><tr><th>Documento</th><th>Emitente</th><th>Emissão</th><th>Status</th><th class="align-right">Valor</th><th></th></tr></thead><tbody id="documentsTable"></tbody></table></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="rankingView">
+        <div class="ranking-header">
+          <div><span class="panel-kicker">Receitas ativas por cliente</span><h2>Ranking de faturamento</h2><p>O ranking é recalculado automaticamente sempre que uma receita é criada, alterada ou cancelada.</p></div>
+          <div class="ranking-controls"><label>Visualização<select id="rankingScope"><option value="month">Período selecionado</option><option value="all">Todo o histórico</option></select></label><label>Localizar cliente<input type="search" id="rankingSearch" placeholder="Nome ou CNPJ"></label></div>
+        </div>
+        <div class="metric-grid ranking-metrics">
+          <article class="metric-card income"><div><span>Faturamento classificado</span><strong id="rankingRevenue">R$ 0,00</strong><small id="rankingInvoiceCount">0 notas ativas</small></div></article>
+          <article class="metric-card balance"><div><span>Clientes no ranking</span><strong id="rankingClientCount">0</strong><small>Agrupados prioritariamente pelo CNPJ</small></div></article>
+          <article class="metric-card payable"><div><span>Concentração Top 3</span><strong id="rankingTop3">0%</strong><small id="rankingTop3Value">R$ 0,00</small></div></article>
+          <article class="metric-card expense"><div><span>Ticket médio</span><strong id="rankingAverage">R$ 0,00</strong><small>Valor médio por nota ativa</small></div></article>
+        </div>
+        <div class="ranking-podium" id="rankingPodium"></div>
+        <article class="panel ranking-table-panel">
+          <div class="panel-header"><div><span class="panel-kicker">Classificação completa</span><h2>Clientes por faturamento</h2></div><span class="ranking-rule">Notas canceladas não participam do cálculo</span></div>
+          <div class="table-wrap"><table class="ranking-table"><thead><tr><th>#</th><th>CNPJ/CPF</th><th>Cliente</th><th>Qtd. notas</th><th class="align-right">Valor total</th><th class="align-right">% do total</th><th class="align-right">Ticket médio</th></tr></thead><tbody id="rankingTable"></tbody><tfoot id="rankingTableFooter"></tfoot></table></div>
+        </article>
+      </section>
+
+      <section class="view" id="reportsView">
+        <div class="report-hero">
+          <div><span class="panel-kicker">Consolidação mensal</span><h2>Relatório financeiro</h2><p>Use o período selecionado no topo para gerar uma visão consolidada e exportar os lançamentos.</p></div>
+          <button class="button primary" id="exportButton">Exportar CSV</button>
+        </div>
+        <div class="metric-grid report-metrics" id="reportMetrics"></div>
+        <article class="panel"><div class="panel-header"><div><span class="panel-kicker">Análise gerencial</span><h2>Indicadores do período</h2></div></div><div id="reportInsights" class="insights-grid"></div></article>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="transactionDialog">
+    <form method="dialog" id="transactionForm" class="dialog-form">
+      <div class="dialog-header"><div><span class="panel-kicker">Movimentação financeira</span><h2 id="dialogTitle">Novo lançamento</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></div>
+      <input type="hidden" name="id">
+      <div class="segmented"><label><input type="radio" name="kind" value="expense" checked><span>Despesa</span></label><label><input type="radio" name="kind" value="income"><span>Receita</span></label></div>
+      <div class="form-grid">
+        <label class="span-2">Descrição *<input name="description" required maxlength="180" placeholder="Ex.: Licença anual do sistema"></label>
+        <label>Valor (R$) *<input name="amount" inputmode="decimal" required placeholder="0,00"></label>
+        <label>Data *<input type="date" name="transaction_date" required></label>
+        <label>Vencimento<input type="date" name="due_date"></label>
+        <label>Status *<select name="status" required><option value="paid">Pago/recebido</option><option value="pending">Pendente</option><option value="overdue">Vencido</option><option value="cancelled">Cancelado</option></select></label>
+        <label>Categoria *<input name="category" list="allCategories" required placeholder="Selecione ou digite"></label>
+        <label>Centro de custo<input name="cost_center" list="costCenters" placeholder="Ex.: Administrativo"></label>
+        <label>Fornecedor ou cliente<input name="counterparty" maxlength="180" placeholder="Razão social ou nome"></label>
+        <label>CNPJ ou CPF<input name="counterparty_tax_id" maxlength="18" placeholder="00.000.000/0000-00"></label>
+        <label>Documento<input name="document_number" maxlength="60" placeholder="NF, boleto, contrato..."></label>
+        <label class="span-2">Observações<textarea name="notes" rows="3" maxlength="1000" placeholder="Informações adicionais"></textarea></label>
+      </div>
+      <p class="form-error" id="formError" role="alert"></p>
+      <div class="dialog-actions"><button class="button secondary" value="cancel">Cancelar</button><button class="button primary" type="submit" value="default">Salvar lançamento</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="documentReviewDialog">
+    <form method="dialog" id="documentReviewForm" class="dialog-form">
+      <div class="dialog-header">
+        <div><span class="panel-kicker">Conferência obrigatória</span><h2>Dados extraídos da nota</h2><p class="dialog-subtitle" id="reviewFileName"></p></div>
+        <button class="icon-button" value="cancel" aria-label="Fechar">×</button>
+      </div>
+      <input type="hidden" name="document_id">
+      <div class="extraction-summary">
+        <span class="confidence-badge" id="confidenceBadge">0% de confiança</span>
+        <span id="documentTypeLabel">Documento fiscal</span>
+        <a id="reviewDocumentLink" target="_blank" rel="noopener">Abrir arquivo original</a>
+      </div>
+      <div class="document-parties">
+        <div><span>Emitente identificado</span><strong id="issuerSummary">Não identificado</strong><small id="issuerTaxSummary"></small></div>
+        <div><span>Destinatário identificado</span><strong id="recipientSummary">Não identificado</strong><small id="recipientTaxSummary"></small></div>
+      </div>
+      <div class="segmented"><label><input type="radio" name="kind" value="expense" checked><span>Registrar como despesa</span></label><label><input type="radio" name="kind" value="income"><span>Registrar como receita</span></label></div>
+      <div class="form-grid">
+        <label class="span-2">Descrição *<input name="description" required maxlength="180"></label>
+        <label>Valor total (R$) *<input name="amount" inputmode="decimal" required placeholder="0,00"></label>
+        <label>Data de emissão *<input type="date" name="transaction_date" required></label>
+        <label>Vencimento<input type="date" name="due_date"></label>
+        <label>Status *<select name="status" required><option value="pending">Pendente</option><option value="paid">Pago/recebido</option><option value="overdue">Vencido</option><option value="cancelled">Cancelado</option></select></label>
+        <label>Categoria *<input name="category" list="allCategories" required value="Outros"></label>
+        <label>Centro de custo<input name="cost_center" list="costCenters"></label>
+        <label>Fornecedor ou cliente<input name="counterparty" maxlength="180"></label>
+        <label>CNPJ ou CPF<input name="counterparty_tax_id" maxlength="18"></label>
+        <label>Número da nota<input name="document_number" maxlength="60"></label>
+        <label class="span-2">Observações<textarea name="notes" rows="3" maxlength="1000"></textarea></label>
+      </div>
+      <div id="documentWarnings" class="document-warnings"></div>
+      <p class="form-error" id="documentFormError" role="alert"></p>
+      <div class="dialog-actions"><button class="button secondary" value="cancel">Manter sem lançamento</button><button class="button primary" type="submit" value="default">Conferi e quero salvar</button></div>
+    </form>
+  </dialog>
+
+  <datalist id="allCategories"></datalist><datalist id="expenseCategories"></datalist><datalist id="costCenters"></datalist>
+  <div class="toast" id="toast" role="status"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

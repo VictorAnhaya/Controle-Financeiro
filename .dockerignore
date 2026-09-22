@@ -1,0 +1,9 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.py[cod]
+*.db
+*.db-*
+data/documents/*
+tests

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+  <NFe>
+    <infNFe Id="NFe41260812345678000190550010000001231000001234" versao="4.00">
+      <ide><nNF>123</nNF><dhEmi>2026-08-30T10:30:00-03:00</dhEmi></ide>
+      <emit><CNPJ>12345678000190</CNPJ><xNome>FORNECEDOR EXEMPLO LTDA</xNome></emit>
+      <dest><CNPJ>98765432000110</CNPJ><xNome>GRUPO BOLOTTI REIS LTDA</xNome></dest>
+      <total><ICMSTot><vNF>1234.56</vNF></ICMSTot></total>
+    </infNFe>
+  </NFe>
+</nfeProc>
+
