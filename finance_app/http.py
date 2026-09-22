@@ -41,7 +41,7 @@ class FinanceHttpApplication:
         config = self.config
 
         class RequestHandler(BaseHTTPRequestHandler):
-            server_version = "BolottiFinance/4.0"
+            server_version = "BolottiFinance/5.0"
 
             def log_message(self, format: str, *args: Any) -> None:
                 print(f"[{self.log_date_time_string()}] {format % args}")
@@ -82,6 +82,11 @@ class FinanceHttpApplication:
                                 query.get("month", ""), query.get("scope", "month")
                             )
                         )
+                    if parsed.path == "/api/clients":
+                        return self._json(service.list_clients(self._query(parsed.query)))
+                    if parsed.path == "/api/goals":
+                        query = self._query(parsed.query)
+                        return self._json(service.goal_projection(query.get("month", "")))
                     if parsed.path == "/api/transactions":
                         return self._json(service.list_transactions(self._query(parsed.query)))
                     if parsed.path == "/api/budgets":
@@ -146,6 +151,10 @@ class FinanceHttpApplication:
                         return self._json(auth.create_user(self._json_body()), HTTPStatus.CREATED)
                     if parsed.path == "/api/transactions":
                         return self._json(service.create_transaction(self._json_body()), HTTPStatus.CREATED)
+                    if parsed.path == "/api/clients":
+                        return self._json(service.create_client(self._json_body()), HTTPStatus.CREATED)
+                    if parsed.path == "/api/goals":
+                        return self._json(service.upsert_goal(self._json_body()), HTTPStatus.CREATED)
                     if parsed.path == "/api/budgets":
                         return self._json(service.upsert_budget(self._json_body()), HTTPStatus.CREATED)
                     if parsed.path == "/api/import/nfse":
@@ -185,6 +194,12 @@ class FinanceHttpApplication:
                                 {"error": "Usuário não encontrado."}, HTTPStatus.NOT_FOUND
                             )
                         return self._json(updated_user)
+                    client_id = self._client_id(parsed.path)
+                    if client_id is not None:
+                        updated_client = service.update_client(client_id, self._json_body())
+                        if updated_client is None:
+                            return self._json({"error": "Cliente não encontrado."}, HTTPStatus.NOT_FOUND)
+                        return self._json(updated_client)
                     transaction_id = self._transaction_id(parsed.path)
                     if transaction_id is None:
                         return self._json({"error": "Rota não encontrada."}, HTTPStatus.NOT_FOUND)
@@ -286,6 +301,16 @@ class FinanceHttpApplication:
             @staticmethod
             def _user_id(path: str) -> int | None:
                 prefix = "/api/users/"
+                if not path.startswith(prefix):
+                    return None
+                try:
+                    return int(path.removeprefix(prefix))
+                except ValueError:
+                    return None
+
+            @staticmethod
+            def _client_id(path: str) -> int | None:
+                prefix = "/api/clients/"
                 if not path.startswith(prefix):
                     return None
                 try:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import unittest
 import importlib.util
@@ -123,6 +124,111 @@ class FinanceServiceTests(unittest.TestCase):
         )
         after_cancelled = self.service.client_ranking("2026-08")
         self.assertEqual(after_cancelled["items"][1]["total_cents"], 5_065_391)
+
+    def test_clients_are_backfilled_and_can_be_managed(self) -> None:
+        self.service.seed_initial_data(PROJECT_ROOT / "data" / "initial_transactions.json")
+        result = self.service.list_clients({"month": "2026-08"})
+
+        self.assertEqual(result["summary"]["active_count"], 17)
+        self.assertEqual(result["summary"]["revenue_cents"], 23_053_713)
+        self.assertTrue(all(item["invoice_count"] > 0 for item in result["items"]))
+
+        client = self.service.create_client(
+            {
+                "name": "Cliente Teste Ltda",
+                "tax_id": "12.345.678/0001-90",
+                "contact_name": "Ana",
+                "email": "ana@example.com",
+                "phone": "(11) 99999-9999",
+                "acquisition_date": "2026-09-05",
+                "status": "active",
+            }
+        )
+        income = self.service.create_transaction(
+            {
+                "kind": "income",
+                "description": "Contrato mensal",
+                "amount": "2.500,00",
+                "transaction_date": "2026-09-10",
+                "status": "paid",
+                "category": "Honorários e serviços",
+                "client_id": client["id"],
+            }
+        )
+        self.assertEqual(income["client_id"], client["id"])
+        self.assertEqual(income["counterparty"], "Cliente Teste Ltda")
+        self.assertEqual(income["counterparty_tax_id"], "12345678000190")
+
+        updated = self.service.update_client(client["id"], {"status": "inactive"})
+        self.assertEqual(updated["status"], "inactive")
+        with self.assertRaises(ValidationError):
+            self.service.create_transaction(
+                {
+                    "kind": "income",
+                    "description": "Não permitido",
+                    "amount": "100,00",
+                    "transaction_date": "2026-09-11",
+                    "status": "paid",
+                    "category": "Honorários e serviços",
+                    "client_id": client["id"],
+                }
+            )
+
+    def test_goals_report_actuals_and_past_month_projection(self) -> None:
+        self.service.seed_initial_data(PROJECT_ROOT / "data" / "initial_transactions.json")
+        result = self.service.upsert_goal(
+            {
+                "month": "2026-08",
+                "revenue_target": "250.000,00",
+                "expense_limit": "20.000,00",
+                "new_clients_target": "20",
+                "notes": "Meta mensal",
+            }
+        )
+
+        self.assertEqual(result["goal"]["revenue_target_cents"], 25_000_000)
+        self.assertEqual(result["actual"]["revenue_cents"], 23_053_713)
+        self.assertEqual(result["actual"]["new_clients"], 17)
+        self.assertEqual(result["projection"]["revenue_cents"], 23_053_713)
+        self.assertEqual(result["progress"]["revenue_remaining_cents"], 1_946_287)
+        self.assertEqual(result["progress"]["clients_percent"], 85.0)
+
+    def test_existing_database_is_migrated_without_losing_transactions(self) -> None:
+        legacy_path = Path(self.temporary_directory.name) / "legacy.db"
+        connection = sqlite3.connect(legacy_path)
+        connection.execute(
+            """
+            CREATE TABLE transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL, description TEXT NOT NULL,
+                amount_cents INTEGER NOT NULL, transaction_date TEXT NOT NULL,
+                due_date TEXT, status TEXT NOT NULL, category TEXT NOT NULL,
+                cost_center TEXT, counterparty TEXT, counterparty_tax_id TEXT,
+                document_number TEXT, notes TEXT, source TEXT NOT NULL DEFAULT 'manual',
+                external_key TEXT UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO transactions
+                (kind, description, amount_cents, transaction_date, status, category, counterparty)
+            VALUES ('income', 'Receita antiga', 10000, '2026-08-01', 'paid', 'Serviços', 'Cliente antigo')
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        database = Database(legacy_path)
+        database.migrate()
+        service = FinanceService(FinanceRepository(database))
+        service.seed_initial_data(Path(self.temporary_directory.name) / "missing-seed.json")
+
+        clients = service.list_clients({"month": "2026-08"})
+        self.assertEqual(clients["summary"]["active_count"], 1)
+        self.assertEqual(clients["items"][0]["name"], "Cliente antigo")
+        self.assertEqual(service.dashboard("2026-08")["totals"]["income_cents"], 10000)
 
     def test_xml_document_is_extracted_linked_and_deduplicated(self) -> None:
         xml_path = PROJECT_ROOT / "tests" / "fixtures" / "nfe_sample.xml"

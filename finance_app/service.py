@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import calendar
 import hashlib
 import io
 import json
@@ -107,11 +108,13 @@ class FinanceService:
                 rows.append(row)
             self.repository.create_transactions_ignoring_duplicates(rows)
         self.repository.backfill_counterparty_tax_ids()
+        self.repository.sync_clients_from_income()
 
     def metadata(self) -> dict[str, Any]:
         meta = self.repository.metadata()
         meta["categories"] = sorted(set(meta["categories"] + self.DEFAULT_EXPENSE_CATEGORIES))
         meta["cost_centers"] = sorted(set(meta["cost_centers"] + self.DEFAULT_COST_CENTERS))
+        meta["clients"] = self.repository.client_options()
         return meta
 
     def list_transactions(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
@@ -123,7 +126,11 @@ class FinanceService:
     def create_transaction(self, payload: dict[str, Any]) -> dict[str, Any]:
         values = self._validated_transaction(payload)
         values["source"] = "manual"
-        return self.repository.create_transaction(values)
+        created = self.repository.create_transaction(values)
+        if values["kind"] == "income" and not values.get("client_id"):
+            self.repository.sync_clients_from_income()
+            created = self.repository.get_transaction(created["id"]) or created
+        return created
 
     def update_transaction(self, transaction_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
         current = self.repository.get_transaction(transaction_id)
@@ -133,7 +140,11 @@ class FinanceService:
         values = self._validated_transaction(merged)
         values["source"] = current["source"]
         values["external_key"] = current["external_key"]
-        return self.repository.update_transaction(transaction_id, values)
+        updated = self.repository.update_transaction(transaction_id, values)
+        if updated and values["kind"] == "income" and not values.get("client_id"):
+            self.repository.sync_clients_from_income()
+            updated = self.repository.get_transaction(transaction_id) or updated
+        return updated
 
     def delete_transaction(self, transaction_id: int) -> bool:
         return self.repository.delete_transaction(transaction_id)
@@ -162,6 +173,21 @@ class FinanceService:
                 {"counterparty_tax_id": "Informe um CPF ou CNPJ válido."},
             )
 
+        client_id: int | None = None
+        if kind == "income" and str(payload.get("client_id") or "").strip():
+            try:
+                client_id = int(payload["client_id"])
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("Cliente inválido.", {"client_id": "Selecione um cliente válido."}) from exc
+            client = self.repository.get_client(client_id)
+            if client is None:
+                raise ValidationError("Cliente não encontrado.", {"client_id": "Selecione um cliente válido."})
+            if client["status"] != "active":
+                raise ValidationError("O cliente selecionado está inativo.", {"client_id": "Reative o cliente antes de usá-lo."})
+            payload = dict(payload)
+            payload["counterparty"] = client["name"]
+            raw_tax_id = client["tax_id"] or ""
+
         return {
             "kind": kind,
             "description": description,
@@ -171,10 +197,148 @@ class FinanceService:
             "status": status,
             "category": category,
             "cost_center": self._clean_text(payload.get("cost_center"), max_length=80),
+            "client_id": client_id,
             "counterparty": self._clean_text(payload.get("counterparty"), max_length=180),
             "counterparty_tax_id": raw_tax_id or None,
             "document_number": self._clean_text(payload.get("document_number"), max_length=60),
             "notes": self._clean_text(payload.get("notes"), max_length=1000),
+        }
+
+    def list_clients(self, filters: dict[str, Any]) -> dict[str, Any]:
+        month = self._validate_month(filters.get("month"))
+        status = str(filters.get("status") or "").strip()
+        if status not in {"", "active", "inactive"}:
+            raise ValidationError("Status de cliente inválido.")
+        search = self._clean_text(filters.get("search"), max_length=120) or ""
+        return {
+            "items": self.repository.list_clients(month, search, status),
+            "summary": self.repository.client_summary(month),
+            "month": month,
+        }
+
+    def _validated_client(self, payload: dict[str, Any], current_id: int | None = None) -> dict[str, Any]:
+        name = self._clean_text(payload.get("name"), required=True, max_length=180)
+        assert name
+        tax_id = re.sub(r"\D", "", str(payload.get("tax_id") or "")) or None
+        if tax_id and len(tax_id) not in {11, 14}:
+            raise ValidationError("Confira o CPF ou CNPJ.", {"tax_id": "Informe 11 ou 14 dígitos."})
+        email = self._clean_text(payload.get("email"), max_length=180)
+        if email and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            raise ValidationError("Confira o e-mail.", {"email": "Informe um e-mail válido."})
+        status = str(payload.get("status") or "active").strip()
+        if status not in {"active", "inactive"}:
+            raise ValidationError("Status de cliente inválido.", {"status": "Escolha ativo ou inativo."})
+        match_key = self.repository.client_match_key(name, tax_id)
+        duplicate = self.repository.find_client_by_match_key(match_key)
+        if duplicate and duplicate["id"] != current_id:
+            raise ValidationError(
+                "Já existe um cliente com esse nome ou CPF/CNPJ.",
+                {"tax_id" if tax_id else "name": "Cliente já cadastrado."},
+            )
+        return {
+            "name": name,
+            "tax_id": tax_id,
+            "match_key": match_key,
+            "contact_name": self._clean_text(payload.get("contact_name"), max_length=180),
+            "email": email,
+            "phone": self._clean_text(payload.get("phone"), max_length=40),
+            "acquisition_date": self._validate_date(payload.get("acquisition_date"), "acquisition_date"),
+            "status": status,
+            "notes": self._clean_text(payload.get("notes"), max_length=1000),
+        }
+
+    def create_client(self, payload: dict[str, Any]) -> dict[str, Any]:
+        values = self._validated_client(payload)
+        client = self.repository.create_client(values)
+        self.repository.relink_client_transactions(client["id"], client["name"], client["tax_id"])
+        return client
+
+    def update_client(self, client_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+        current = self.repository.get_client(client_id)
+        if current is None:
+            return None
+        values = self._validated_client({**current, **payload}, current_id=client_id)
+        client = self.repository.update_client(client_id, values)
+        if client:
+            self.repository.relink_client_transactions(client_id, client["name"], client["tax_id"])
+        return client
+
+    @staticmethod
+    def _month_shift(month: str, delta: int) -> str:
+        year, number = map(int, month.split("-"))
+        index = year * 12 + number - 1 + delta
+        return f"{index // 12:04d}-{index % 12 + 1:02d}"
+
+    def upsert_goal(self, payload: dict[str, Any]) -> dict[str, Any]:
+        month = self._validate_month(payload.get("month"))
+        try:
+            new_clients_target = int(payload.get("new_clients_target", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("Confira a meta de clientes.", {"new_clients_target": "Informe um número inteiro."}) from exc
+        if new_clients_target < 0:
+            raise ValidationError("Confira a meta de clientes.", {"new_clients_target": "Não pode ser negativa."})
+        self.repository.upsert_goal(
+            {
+                "month": month,
+                "revenue_target_cents": self._money_to_cents(payload.get("revenue_target"), "revenue_target"),
+                "expense_limit_cents": self._money_to_cents(payload.get("expense_limit"), "expense_limit"),
+                "new_clients_target": new_clients_target,
+                "notes": self._clean_text(payload.get("notes"), max_length=1000),
+            }
+        )
+        return self.goal_projection(month)
+
+    def goal_projection(self, month: str) -> dict[str, Any]:
+        resolved = self._validate_month(month)
+        today = date.today()
+        current_month = today.strftime("%Y-%m")
+        actual = self.repository.month_actuals(resolved)
+        goal = self.repository.get_goal(resolved)
+        history: list[dict[str, Any]] = []
+        for offset in range(-5, 1):
+            history_month = self._month_shift(resolved, offset)
+            values = self.repository.month_actuals(history_month)
+            history.append({"month": history_month, **values, "goal": self.repository.get_goal(history_month)})
+
+        if resolved < current_month:
+            projected_revenue = int(actual["revenue_cents"])
+            projected_expense = int(actual["expense_cents"])
+        elif resolved == current_month:
+            days = calendar.monthrange(today.year, today.month)[1]
+            projected_revenue = round(int(actual["revenue_cents"]) / today.day * days)
+            projected_expense = round(int(actual["expense_cents"]) / today.day * days)
+        else:
+            prior = [
+                self.repository.month_actuals(self._month_shift(resolved, offset))
+                for offset in (-3, -2, -1)
+            ]
+            projected_revenue = round(sum(int(item["revenue_cents"]) for item in prior) / 3)
+            projected_expense = round(sum(int(item["expense_cents"]) for item in prior) / 3)
+
+        revenue_target = int(goal["revenue_target_cents"]) if goal else 0
+        expense_limit = int(goal["expense_limit_cents"]) if goal else 0
+        client_target = int(goal["new_clients_target"]) if goal else 0
+        actual_revenue = int(actual["revenue_cents"])
+        actual_expense = int(actual["expense_cents"])
+        actual_clients = int(actual["new_clients"])
+        return {
+            "month": resolved,
+            "goal": goal,
+            "actual": actual,
+            "projection": {
+                "revenue_cents": projected_revenue,
+                "expense_cents": projected_expense,
+                "result_cents": projected_revenue - projected_expense,
+            },
+            "progress": {
+                "revenue_percent": round(actual_revenue / revenue_target * 100, 1) if revenue_target else 0,
+                "expense_percent": round(actual_expense / expense_limit * 100, 1) if expense_limit else 0,
+                "clients_percent": round(actual_clients / client_target * 100, 1) if client_target else 0,
+                "revenue_remaining_cents": max(revenue_target - actual_revenue, 0),
+                "expense_available_cents": max(expense_limit - actual_expense, 0),
+                "clients_remaining": max(client_target - actual_clients, 0),
+            },
+            "history": history,
         }
 
     def dashboard(self, month: str) -> dict[str, Any]:
@@ -233,6 +397,7 @@ class FinanceService:
     def import_nfse(self, content: bytes) -> dict[str, Any]:
         rows = parse_nfse_workbook(content)
         inserted, ignored = self.repository.create_transactions_ignoring_duplicates(rows)
+        self.repository.sync_clients_from_income()
         active_total = sum(row["amount_cents"] for row in rows if row["status"] == "paid")
         cancelled_total = sum(row["amount_cents"] for row in rows if row["status"] == "cancelled")
         return {
@@ -325,6 +490,9 @@ class FinanceService:
         if linked is None:
             return None
         transaction, updated_document = linked
+        if values["kind"] == "income" and not values.get("client_id"):
+            self.repository.sync_clients_from_income()
+            transaction = self.repository.get_transaction(transaction["id"]) or transaction
         return {"transaction": transaction, "document": self._public_document(updated_document)}
 
     def document_file(self, document_id: int) -> tuple[Path, str, str] | None:

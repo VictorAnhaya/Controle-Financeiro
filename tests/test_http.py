@@ -94,6 +94,57 @@ class HttpApplicationTests(unittest.TestCase):
             payload = json.load(response)
         self.assertEqual(payload["amount_cents"], 49_990)
 
+    def test_clients_and_goals_are_available_through_api(self) -> None:
+        with self.opener.open(f"{self.base_url}/api/clients?month=2026-08") as response:
+            clients = json.load(response)
+        self.assertEqual(clients["summary"]["active_count"], 17)
+
+        client_request = Request(
+            f"{self.base_url}/api/clients",
+            data=json.dumps(
+                {
+                    "name": "Novo Cliente API",
+                    "tax_id": "12345678000190",
+                    "email": "financeiro@example.com",
+                    "acquisition_date": "2026-09-01",
+                    "status": "active",
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.opener.open(client_request) as response:
+            client = json.load(response)
+        self.assertEqual(client["name"], "Novo Cliente API")
+
+        update_client = Request(
+            f"{self.base_url}/api/clients/{client['id']}",
+            data=json.dumps({"status": "inactive"}).encode("utf-8"),
+            method="PUT",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.opener.open(update_client) as response:
+            updated_client = json.load(response)
+        self.assertEqual(updated_client["status"], "inactive")
+
+        goal_request = Request(
+            f"{self.base_url}/api/goals",
+            data=json.dumps(
+                {
+                    "month": "2026-08",
+                    "revenue_target": "250000,00",
+                    "expense_limit": "20000,00",
+                    "new_clients_target": 20,
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.opener.open(goal_request) as response:
+            goals = json.load(response)
+        self.assertEqual(goals["goal"]["revenue_target_cents"], 25_000_000)
+        self.assertEqual(goals["actual"]["new_clients"], 17)
+
     def test_xml_document_can_be_analyzed_and_posted(self) -> None:
         xml = (PROJECT_ROOT / "tests" / "fixtures" / "nfe_sample.xml").read_bytes()
         analyze_request = Request(
@@ -201,6 +252,16 @@ class HttpAuthenticationTests(unittest.TestCase):
         with self.admin_opener.open(create_user) as response:
             created = json.load(response)
         self.assertEqual(created["username"], "maria")
+
+        update_user = Request(
+            f"{self.base_url}/api/users/{created['id']}",
+            data=json.dumps({"name": "Maria Souza", "role": "user", "is_active": True}).encode("utf-8"),
+            method="PUT",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.admin_opener.open(update_user) as response:
+            updated = json.load(response)
+        self.assertEqual(updated["name"], "Maria Souza")
 
         user_opener = build_opener(HTTPCookieProcessor(CookieJar()))
         login_request = Request(

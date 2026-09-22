@@ -32,6 +32,21 @@ class Database:
                 """
                 PRAGMA journal_mode = WAL;
 
+                CREATE TABLE IF NOT EXISTS clients (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    tax_id TEXT UNIQUE,
+                    match_key TEXT NOT NULL UNIQUE,
+                    contact_name TEXT,
+                    email TEXT,
+                    phone TEXT,
+                    acquisition_date TEXT,
+                    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
+
                 CREATE TABLE IF NOT EXISTS transactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     kind TEXT NOT NULL CHECK (kind IN ('income', 'expense')),
@@ -42,6 +57,7 @@ class Database:
                     status TEXT NOT NULL CHECK (status IN ('paid', 'pending', 'overdue', 'cancelled')),
                     category TEXT NOT NULL,
                     cost_center TEXT,
+                    client_id INTEGER,
                     counterparty TEXT,
                     counterparty_tax_id TEXT,
                     document_number TEXT,
@@ -49,7 +65,8 @@ class Database:
                     source TEXT NOT NULL DEFAULT 'manual',
                     external_key TEXT UNIQUE,
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS budgets (
@@ -60,6 +77,17 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                     UNIQUE(month, category)
+                );
+
+                CREATE TABLE IF NOT EXISTS goals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    month TEXT NOT NULL UNIQUE,
+                    revenue_target_cents INTEGER NOT NULL CHECK (revenue_target_cents > 0),
+                    expense_limit_cents INTEGER NOT NULL CHECK (expense_limit_cents > 0),
+                    new_clients_target INTEGER NOT NULL DEFAULT 0 CHECK (new_clients_target >= 0),
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                 );
 
                 CREATE TABLE IF NOT EXISTS fiscal_documents (
@@ -115,6 +143,10 @@ class Database:
                     ON transactions(category);
                 CREATE INDEX IF NOT EXISTS idx_budgets_month
                     ON budgets(month);
+                CREATE INDEX IF NOT EXISTS idx_clients_status
+                    ON clients(status);
+                CREATE INDEX IF NOT EXISTS idx_clients_acquisition_date
+                    ON clients(acquisition_date);
                 CREATE INDEX IF NOT EXISTS idx_fiscal_documents_issue_date
                     ON fiscal_documents(issue_date);
                 CREATE INDEX IF NOT EXISTS idx_fiscal_documents_status
@@ -126,6 +158,15 @@ class Database:
                 """
             )
             self._ensure_column(connection, "transactions", "counterparty_tax_id", "TEXT")
+            self._ensure_column(
+                connection,
+                "transactions",
+                "client_id",
+                "INTEGER REFERENCES clients(id) ON DELETE SET NULL",
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_transactions_client ON transactions(client_id)"
+            )
 
     @staticmethod
     def _ensure_column(

@@ -42,9 +42,11 @@
       <nav class="nav" aria-label="Navegação principal">
         <button class="nav-item active" data-view="dashboard"><span>⌂</span> Visão geral</button>
         <button class="nav-item" data-view="transactions"><span>↕</span> Lançamentos</button>
+        <button class="nav-item" data-view="clients"><span>♧</span> Clientes</button>
         <button class="nav-item" data-view="documents"><span>▱</span> Notas fiscais</button>
         <button class="nav-item" data-view="ranking"><span>★</span> Ranking de clientes</button>
         <button class="nav-item" data-view="budgets"><span>◎</span> Orçamentos</button>
+        <button class="nav-item" data-view="goals"><span>⌁</span> Metas e projeções</button>
         <button class="nav-item" data-view="reports"><span>▤</span> Relatórios</button>
         <button class="nav-item admin-only" data-view="users" hidden><span>♙</span> Usuários</button>
       </nav>
@@ -162,6 +164,58 @@
         </div>
       </section>
 
+      <section class="view" id="clientsView">
+        <div class="users-header">
+          <div><span class="panel-kicker">Cadastro e relacionamento</span><h2>Clientes</h2><p>Centralize contatos, situação cadastral e faturamento. Receitas antigas são vinculadas automaticamente.</p></div>
+          <button class="button primary" id="newClientButton">+ Novo cliente</button>
+        </div>
+        <div class="metric-grid ranking-metrics">
+          <article class="metric-card balance"><div><span>Clientes ativos</span><strong id="activeClientsMetric">0</strong><small>Disponíveis nos lançamentos</small></div></article>
+          <article class="metric-card income"><div><span>Receita do período</span><strong id="clientRevenueMetric">R$ 0,00</strong><small>Receitas recebidas</small></div></article>
+          <article class="metric-card payable"><div><span>Novos no período</span><strong id="newClientsMetric">0</strong><small>Por data de aquisição</small></div></article>
+          <article class="metric-card expense"><div><span>Clientes inativos</span><strong id="inactiveClientsMetric">0</strong><small>Preservados no histórico</small></div></article>
+        </div>
+        <article class="panel">
+          <div class="filter-bar client-filters">
+            <label>Localizar<input type="search" id="clientSearch" placeholder="Nome, CPF/CNPJ, contato ou e-mail"></label>
+            <label>Situação<select id="clientStatusFilter"><option value="">Todos</option><option value="active">Ativos</option><option value="inactive">Inativos</option></select></label>
+            <button class="button secondary" id="clearClientFilters" type="button">Limpar</button>
+          </div>
+          <div class="table-wrap"><table class="clients-table"><thead><tr><th>Cliente</th><th>Contato</th><th>Situação</th><th>Receita no período</th><th>Receita acumulada</th><th>Última receita</th><th></th></tr></thead><tbody id="clientsTable"></tbody></table></div>
+        </article>
+      </section>
+
+      <section class="view" id="goalsView">
+        <div class="report-hero">
+          <div><span class="panel-kicker">Planejamento gerencial</span><h2>Metas e projeções</h2><p>Defina objetivos mensais e acompanhe o realizado, o ritmo projetado e o resultado esperado.</p></div>
+        </div>
+        <div class="goals-layout">
+          <article class="panel compact-form">
+            <span class="panel-kicker">Objetivos do período</span><h2>Configurar metas</h2>
+            <form id="goalForm">
+              <label>Meta de receita (R$)<input name="revenue_target" inputmode="decimal" required placeholder="0,00"></label>
+              <label>Limite de despesas (R$)<input name="expense_limit" inputmode="decimal" required placeholder="0,00"></label>
+              <label>Meta de novos clientes<input name="new_clients_target" type="number" min="0" step="1" required value="0"></label>
+              <label>Observações<textarea name="notes" rows="3" maxlength="1000" placeholder="Premissas e prioridades do mês"></textarea></label>
+              <button class="button primary full" type="submit">Salvar metas do período</button>
+            </form>
+          </article>
+          <div class="goals-content">
+            <div class="metric-grid goal-metrics">
+              <article class="metric-card income"><div><span>Receita realizada</span><strong id="goalRevenueActual">R$ 0,00</strong><small id="goalRevenueProgress">Sem meta cadastrada</small></div></article>
+              <article class="metric-card expense"><div><span>Despesa realizada</span><strong id="goalExpenseActual">R$ 0,00</strong><small id="goalExpenseProgress">Sem limite cadastrado</small></div></article>
+              <article class="metric-card balance"><div><span>Receita projetada</span><strong id="goalRevenueProjection">R$ 0,00</strong><small>Estimativa para o fechamento</small></div></article>
+              <article class="metric-card payable"><div><span>Resultado projetado</span><strong id="goalResultProjection">R$ 0,00</strong><small>Receita menos despesas</small></div></article>
+            </div>
+            <article class="panel goal-progress-panel">
+              <div class="panel-header"><div><span class="panel-kicker">Acompanhamento</span><h2>Progresso das metas</h2></div><span id="goalStatusLabel" class="ranking-rule">Selecione o período no topo</span></div>
+              <div id="goalProgressList" class="goal-progress-list"></div>
+            </article>
+            <article class="panel"><div class="panel-header"><div><span class="panel-kicker">Últimos seis meses</span><h2>Histórico e referência</h2></div></div><canvas id="goalsChart" height="240" aria-label="Histórico de receitas e despesas"></canvas></article>
+          </div>
+        </div>
+      </section>
+
       <section class="view" id="rankingView">
         <div class="ranking-header">
           <div><span class="panel-kicker">Receitas ativas por cliente</span><h2>Ranking de faturamento</h2><p>O ranking é recalculado automaticamente sempre que uma receita é criada, alterada ou cancelada.</p></div>
@@ -214,6 +268,7 @@
         <label>Status *<select name="status" required><option value="paid">Pago/recebido</option><option value="pending">Pendente</option><option value="overdue">Vencido</option><option value="cancelled">Cancelado</option></select></label>
         <label>Categoria *<input name="category" list="allCategories" required placeholder="Selecione ou digite"></label>
         <label>Centro de custo<input name="cost_center" list="costCenters" placeholder="Ex.: Administrativo"></label>
+        <label class="span-2 income-client-field">Cliente cadastrado<select name="client_id" id="transactionClient"><option value="">Informar manualmente</option></select><small>Disponível para receitas; preenche nome e documento automaticamente.</small></label>
         <label>Fornecedor ou cliente<input name="counterparty" maxlength="180" placeholder="Razão social ou nome"></label>
         <label>CNPJ ou CPF<input name="counterparty_tax_id" maxlength="18" placeholder="00.000.000/0000-00"></label>
         <label>Documento<input name="document_number" maxlength="60" placeholder="NF, boleto, contrato..."></label>
@@ -273,6 +328,25 @@
       </div>
       <p class="form-error" id="userFormError" role="alert"></p>
       <div class="dialog-actions"><button class="button secondary" value="cancel">Cancelar</button><button class="button primary" type="submit" value="default">Salvar usuário</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="clientDialog">
+    <form method="dialog" id="clientForm" class="dialog-form">
+      <div class="dialog-header"><div><span class="panel-kicker">Cadastro de relacionamento</span><h2 id="clientDialogTitle">Novo cliente</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></div>
+      <input type="hidden" name="id">
+      <div class="form-grid">
+        <label class="span-2">Nome ou razão social *<input name="name" required maxlength="180"></label>
+        <label>CPF ou CNPJ<input name="tax_id" maxlength="18" placeholder="00.000.000/0000-00"></label>
+        <label>Data de aquisição<input type="date" name="acquisition_date"></label>
+        <label>Contato principal<input name="contact_name" maxlength="180"></label>
+        <label>Telefone<input name="phone" maxlength="40"></label>
+        <label class="span-2">E-mail<input name="email" type="email" maxlength="180"></label>
+        <label>Situação<select name="status" required><option value="active">Ativo</option><option value="inactive">Inativo</option></select></label>
+        <label class="span-2">Observações<textarea name="notes" rows="3" maxlength="1000"></textarea></label>
+      </div>
+      <p class="form-error" id="clientFormError" role="alert"></p>
+      <div class="dialog-actions"><button class="button secondary" value="cancel">Cancelar</button><button class="button primary" type="submit" value="default">Salvar cliente</button></div>
     </form>
   </dialog>
 

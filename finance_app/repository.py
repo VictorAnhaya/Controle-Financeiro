@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import json
 import re
+import unicodedata
 from datetime import date
 from typing import Any, Iterable
 
@@ -177,6 +178,230 @@ class FinanceRepository:
             )
             cursor = connection.execute("DELETE FROM transactions WHERE id = ?", (transaction_id,))
         return cursor.rowcount == 1
+
+    @staticmethod
+    def client_match_key(name: str, tax_id: str | None = None) -> str:
+        digits = re.sub(r"\D", "", tax_id or "")
+        if digits:
+            return f"tax:{digits}"
+        normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+        normalized = re.sub(r"[^a-z0-9]+", " ", normalized.lower()).strip()
+        return f"name:{normalized}"
+
+    def sync_clients_from_income(self) -> int:
+        """Create/link client records from legacy income transactions."""
+        linked = 0
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT counterparty, counterparty_tax_id,
+                       MIN(transaction_date) AS acquisition_date
+                  FROM transactions
+                 WHERE kind = 'income'
+                   AND status != 'cancelled'
+                   AND counterparty IS NOT NULL
+                   AND trim(counterparty) != ''
+                 GROUP BY COALESCE(NULLIF(counterparty_tax_id, ''), lower(trim(counterparty)))
+                """
+            ).fetchall()
+            for row in rows:
+                name = str(row["counterparty"]).strip()
+                tax_id = re.sub(r"\D", "", row["counterparty_tax_id"] or "") or None
+                match_key = self.client_match_key(name, tax_id)
+                connection.execute(
+                    """
+                    INSERT INTO clients (name, tax_id, match_key, acquisition_date)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(match_key) DO UPDATE SET
+                        name = CASE WHEN clients.name = '' THEN excluded.name ELSE clients.name END,
+                        tax_id = COALESCE(clients.tax_id, excluded.tax_id),
+                        acquisition_date = CASE
+                            WHEN clients.acquisition_date IS NULL THEN excluded.acquisition_date
+                            WHEN excluded.acquisition_date < clients.acquisition_date THEN excluded.acquisition_date
+                            ELSE clients.acquisition_date
+                        END,
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    """,
+                    (name, tax_id, match_key, row["acquisition_date"]),
+                )
+                client = connection.execute(
+                    "SELECT id FROM clients WHERE match_key = ?", (match_key,)
+                ).fetchone()
+                assert client is not None
+                if tax_id:
+                    cursor = connection.execute(
+                        """
+                        UPDATE transactions SET client_id = ?
+                         WHERE kind = 'income' AND counterparty_tax_id = ?
+                           AND (client_id IS NULL OR client_id != ?)
+                        """,
+                        (client["id"], tax_id, client["id"]),
+                    )
+                else:
+                    cursor = connection.execute(
+                        """
+                        UPDATE transactions SET client_id = ?
+                         WHERE kind = 'income' AND lower(trim(counterparty)) = lower(trim(?))
+                           AND (client_id IS NULL OR client_id != ?)
+                        """,
+                        (client["id"], name, client["id"]),
+                    )
+                linked += max(cursor.rowcount, 0)
+        return linked
+
+    def get_client(self, client_id: int) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+        return self._as_dict(row)
+
+    def find_client_by_match_key(self, match_key: str) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM clients WHERE match_key = ?", (match_key,)
+            ).fetchone()
+        return self._as_dict(row)
+
+    def list_clients(self, month: str, search: str = "", status: str = "") -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = [month]
+        if search:
+            clauses.append("(c.name LIKE ? OR c.tax_id LIKE ? OR c.contact_name LIKE ? OR c.email LIKE ?)")
+            token = f"%{search}%"
+            parameters.extend([token, token, token, token])
+        if status:
+            clauses.append("c.status = ?")
+            parameters.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT c.*,
+                       COUNT(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' THEN 1 END) AS invoice_count,
+                       COALESCE(SUM(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' THEN t.amount_cents END), 0) AS total_revenue_cents,
+                       COUNT(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' AND substr(t.transaction_date, 1, 7) = ? THEN 1 END) AS month_invoice_count,
+                       COALESCE(SUM(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' AND substr(t.transaction_date, 1, 7) = ? THEN t.amount_cents END), 0) AS month_revenue_cents,
+                       MAX(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' THEN t.transaction_date END) AS last_revenue_date
+                  FROM clients c
+                  LEFT JOIN transactions t ON t.client_id = c.id
+                  {where}
+                 GROUP BY c.id
+                 ORDER BY c.status ASC, c.name COLLATE NOCASE ASC
+                """,
+                [month, *parameters],
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def client_options(self) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT id, name, tax_id FROM clients WHERE status = 'active' ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def client_summary(self, month: str) -> dict[str, Any]:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    COUNT(CASE WHEN status = 'active' THEN 1 END) AS active_count,
+                    COUNT(CASE WHEN status = 'inactive' THEN 1 END) AS inactive_count,
+                    COUNT(CASE WHEN substr(acquisition_date, 1, 7) = ? THEN 1 END) AS new_count
+                FROM clients
+                """,
+                (month,),
+            ).fetchone()
+            revenue = connection.execute(
+                """
+                SELECT COALESCE(SUM(amount_cents), 0) AS revenue_cents
+                  FROM transactions
+                 WHERE kind = 'income' AND status = 'paid'
+                   AND substr(transaction_date, 1, 7) = ?
+                """,
+                (month,),
+            ).fetchone()
+        result = dict(row)
+        result["revenue_cents"] = int(revenue["revenue_cents"])
+        return result
+
+    def create_client(self, values: dict[str, Any]) -> dict[str, Any]:
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"INSERT INTO clients ({columns}) VALUES ({placeholders})", tuple(values.values())
+            )
+            client_id = int(cursor.lastrowid)
+        created = self.get_client(client_id)
+        assert created is not None
+        return created
+
+    def update_client(self, client_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
+        assignments = ", ".join(f"{column} = ?" for column in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE clients SET {assignments},
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?
+                """,
+                [*values.values(), client_id],
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_client(client_id)
+
+    def relink_client_transactions(self, client_id: int, name: str, tax_id: str | None) -> None:
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                UPDATE transactions
+                   SET counterparty = ?, counterparty_tax_id = ?
+                 WHERE client_id = ? AND kind = 'income'
+                """,
+                (name, tax_id, client_id),
+            )
+
+    def upsert_goal(self, values: dict[str, Any]) -> dict[str, Any]:
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO goals (month, revenue_target_cents, expense_limit_cents, new_clients_target, notes)
+                VALUES (:month, :revenue_target_cents, :expense_limit_cents, :new_clients_target, :notes)
+                ON CONFLICT(month) DO UPDATE SET
+                    revenue_target_cents = excluded.revenue_target_cents,
+                    expense_limit_cents = excluded.expense_limit_cents,
+                    new_clients_target = excluded.new_clients_target,
+                    notes = excluded.notes,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                """,
+                values,
+            )
+            row = connection.execute("SELECT * FROM goals WHERE month = ?", (values["month"],)).fetchone()
+        result = self._as_dict(row)
+        assert result is not None
+        return result
+
+    def get_goal(self, month: str) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute("SELECT * FROM goals WHERE month = ?", (month,)).fetchone()
+        return self._as_dict(row)
+
+    def month_actuals(self, month: str) -> dict[str, Any]:
+        with self.database.connection() as connection:
+            totals = connection.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN kind = 'income' AND status = 'paid' THEN amount_cents END), 0) AS revenue_cents,
+                    COALESCE(SUM(CASE WHEN kind = 'expense' AND status = 'paid' THEN amount_cents END), 0) AS expense_cents
+                  FROM transactions WHERE substr(transaction_date, 1, 7) = ?
+                """,
+                (month,),
+            ).fetchone()
+            clients = connection.execute(
+                "SELECT COUNT(*) AS new_clients FROM clients WHERE substr(acquisition_date, 1, 7) = ?",
+                (month,),
+            ).fetchone()
+        return {**dict(totals), **dict(clients)}
 
     def dashboard(self, month: str) -> dict[str, Any]:
         with self.database.connection() as connection:

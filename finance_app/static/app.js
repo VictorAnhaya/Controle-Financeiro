@@ -2,8 +2,10 @@ const state = {
   view: "dashboard",
   user: null,
   users: [],
+  clients: [],
+  goals: null,
   month: "",
-  metadata: { categories: [], cost_centers: [] },
+  metadata: { categories: [], cost_centers: [], clients: [] },
   transactions: [],
   documents: [],
   ranking: null,
@@ -145,6 +147,10 @@ function populateDataLists() {
   $("#expenseCategories").innerHTML = categoryOptions;
   $("#categoryFilter").innerHTML = `<option value="">Todas</option>${state.metadata.categories.map(item => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`).join("")}`;
   $("#costCenters").innerHTML = state.metadata.cost_centers.map(item => `<option value="${escapeHtml(item)}"></option>`).join("");
+  const clientSelect = $("#transactionClient");
+  const selectedClient = clientSelect.value;
+  clientSelect.innerHTML = `<option value="">Informar manualmente</option>${(state.metadata.clients || []).map(item => `<option value="${item.id}">${escapeHtml(item.name)}${item.tax_id ? ` · ${escapeHtml(formatTaxId(item.tax_id))}` : ""}</option>`).join("")}`;
+  clientSelect.value = selectedClient;
 }
 
 function wireEvents() {
@@ -154,6 +160,8 @@ function wireEvents() {
   $("#monthPicker").addEventListener("change", async event => { state.month = event.target.value; await loadCurrentView(); });
   $("#newTransactionButton").addEventListener("click", () => openTransactionDialog());
   $("#transactionForm").addEventListener("submit", saveTransaction);
+  $$('#transactionForm input[name="kind"]').forEach(input => input.addEventListener("change", updateTransactionClientVisibility));
+  $("#transactionClient").addEventListener("change", applySelectedClient);
   $("#budgetForm").addEventListener("submit", saveBudget);
   $("#importButton").addEventListener("click", () => $("#importInput").click());
   $("#importInput").addEventListener("change", importWorkbook);
@@ -167,19 +175,28 @@ function wireEvents() {
   $$('#documentReviewForm input[name="kind"]').forEach(input => input.addEventListener("change", applyReviewParty));
   $("#rankingScope").addEventListener("change", loadRanking);
   $("#rankingSearch").addEventListener("input", () => renderRankingTable(state.ranking));
+  $("#newClientButton").addEventListener("click", () => openClientDialog());
+  $("#clientForm").addEventListener("submit", saveClient);
+  $("#clientStatusFilter").addEventListener("change", loadClients);
+  $("#clientSearch").addEventListener("input", debounce(loadClients, 300));
+  $("#clearClientFilters").addEventListener("click", () => { $("#clientSearch").value = ""; $("#clientStatusFilter").value = ""; loadClients(); });
+  $("#goalForm").addEventListener("submit", saveGoal);
   $("#exportButton").addEventListener("click", exportReport);
   $("#newUserButton").addEventListener("click", () => openUserDialog());
   $("#userForm").addEventListener("submit", saveUser);
   $("#clearFiltersButton").addEventListener("click", clearFilters);
   ["#kindFilter", "#statusFilter", "#categoryFilter"].forEach(selector => $(selector).addEventListener("change", loadTransactions));
   $("#searchFilter").addEventListener("input", debounce(loadTransactions, 300));
-  window.addEventListener("resize", debounce(() => { if (state.view === "dashboard" && state.dashboard) renderCharts(state.dashboard); }, 180));
+  window.addEventListener("resize", debounce(() => {
+    if (state.view === "dashboard" && state.dashboard) renderCharts(state.dashboard);
+    if (state.view === "goals" && state.goals) drawGoalsChart(state.goals.history);
+  }, 180));
 }
 
 function switchView(view) {
   if (view === "users" && state.user?.role !== "admin") return;
   state.view = view;
-  const titles = { dashboard: "Visão geral", transactions: "Lançamentos", documents: "Notas fiscais", ranking: "Ranking de clientes", budgets: "Orçamentos", reports: "Relatórios", users: "Usuários" };
+  const titles = { dashboard: "Visão geral", transactions: "Lançamentos", clients: "Clientes", documents: "Notas fiscais", ranking: "Ranking de clientes", budgets: "Orçamentos", goals: "Metas e projeções", reports: "Relatórios", users: "Usuários" };
   $("#pageTitle").textContent = titles[view];
   $$(".view").forEach(element => element.classList.remove("active"));
   $(`#${view}View`).classList.add("active");
@@ -191,9 +208,11 @@ function switchView(view) {
 async function loadCurrentView() {
   if (state.view === "dashboard") return loadDashboard();
   if (state.view === "transactions") return loadTransactions();
+  if (state.view === "clients") return loadClients();
   if (state.view === "documents") return loadDocuments();
   if (state.view === "ranking") return loadRanking();
   if (state.view === "budgets") return loadBudgets();
+  if (state.view === "goals") return loadGoals();
   if (state.view === "reports") return loadReports();
   if (state.view === "users") return loadUsers();
 }
@@ -350,7 +369,23 @@ function openTransactionDialog(id = null) {
     Object.entries(row).forEach(([key, value]) => { if (form.elements[key] && value !== null) form.elements[key].value = value; });
     form.elements.amount.value = (row.amount_cents / 100).toFixed(2).replace(".", ",");
   }
+  updateTransactionClientVisibility();
   $("#transactionDialog").showModal();
+}
+
+function updateTransactionClientVisibility() {
+  const form = $("#transactionForm");
+  const isIncome = form.elements.kind.value === "income";
+  $(".income-client-field").hidden = !isIncome;
+  if (!isIncome) form.elements.client_id.value = "";
+}
+
+function applySelectedClient() {
+  const form = $("#transactionForm");
+  const client = (state.metadata.clients || []).find(item => item.id === Number(form.elements.client_id.value));
+  if (!client) return;
+  form.elements.counterparty.value = client.name;
+  form.elements.counterparty_tax_id.value = formatTaxId(client.tax_id);
 }
 
 async function saveTransaction(event) {
@@ -371,6 +406,116 @@ async function deleteTransaction(id) {
   if (!window.confirm("Excluir este lançamento? Esta ação não pode ser desfeita.")) return;
   try { await api(`/api/transactions/${id}`, { method: "DELETE" }); toast("Lançamento excluído."); await loadTransactions(); }
   catch (error) { toast(error.message, "error"); }
+}
+
+async function loadClients() {
+  const params = queryString({ month: state.month, search: $("#clientSearch").value.trim(), status: $("#clientStatusFilter").value });
+  const data = await api(`/api/clients?${params}`);
+  state.clients = data.items;
+  $("#activeClientsMetric").textContent = integer.format(data.summary.active_count);
+  $("#inactiveClientsMetric").textContent = integer.format(data.summary.inactive_count);
+  $("#newClientsMetric").textContent = integer.format(data.summary.new_count);
+  $("#clientRevenueMetric").textContent = formatMoney(data.summary.revenue_cents);
+  $("#clientsTable").innerHTML = data.items.length ? data.items.map(client => `
+    <tr>
+      <td class="transaction-name"><strong>${escapeHtml(client.name)}</strong><small>${client.tax_id ? escapeHtml(formatTaxId(client.tax_id)) : "Sem CPF/CNPJ"}</small></td>
+      <td class="transaction-name"><strong>${escapeHtml(client.contact_name || "—")}</strong><small>${escapeHtml(client.email || client.phone || "Sem contato informado")}</small></td>
+      <td><span class="badge ${client.status}">${client.status === "active" ? "Ativo" : "Inativo"}</span></td>
+      <td><strong>${formatMoney(client.month_revenue_cents)}</strong><small class="table-note">${integer.format(client.month_invoice_count)} lançamento(s)</small></td>
+      <td><strong>${formatMoney(client.total_revenue_cents)}</strong><small class="table-note">${integer.format(client.invoice_count)} lançamento(s)</small></td>
+      <td>${formatDate(client.last_revenue_date)}</td>
+      <td><div class="row-actions"><button data-edit-client="${client.id}">Editar</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="7" class="empty-state">Nenhum cliente encontrado.</td></tr>`;
+  $$('[data-edit-client]').forEach(button => button.addEventListener("click", () => openClientDialog(Number(button.dataset.editClient))));
+}
+
+function openClientDialog(id = null) {
+  const form = $("#clientForm");
+  form.reset();
+  $("#clientFormError").textContent = "";
+  form.elements.id.value = id || "";
+  form.elements.status.value = "active";
+  $("#clientDialogTitle").textContent = id ? "Editar cliente" : "Novo cliente";
+  if (id) {
+    const client = state.clients.find(item => item.id === id);
+    if (!client) return;
+    Object.entries(client).forEach(([key, value]) => { if (form.elements[key] && value !== null) form.elements[key].value = value; });
+    form.elements.tax_id.value = formatTaxId(client.tax_id);
+  }
+  $("#clientDialog").showModal();
+}
+
+async function saveClient(event) {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") { $("#clientDialog").close(); return; }
+  const payload = Object.fromEntries(new FormData(event.currentTarget));
+  const id = payload.id; delete payload.id;
+  try {
+    await api(id ? `/api/clients/${id}` : "/api/clients", { method: id ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    $("#clientDialog").close();
+    toast(id ? "Cliente atualizado." : "Cliente cadastrado.");
+    state.metadata = await api("/api/meta"); populateDataLists(); await loadClients();
+  } catch (error) { $("#clientFormError").textContent = error.message; }
+}
+
+async function loadGoals() {
+  const data = await api(`/api/goals?month=${state.month}`);
+  state.goals = data;
+  const form = $("#goalForm");
+  const goal = data.goal;
+  form.elements.revenue_target.value = goal ? (goal.revenue_target_cents / 100).toFixed(2).replace(".", ",") : "";
+  form.elements.expense_limit.value = goal ? (goal.expense_limit_cents / 100).toFixed(2).replace(".", ",") : "";
+  form.elements.new_clients_target.value = goal?.new_clients_target ?? 0;
+  form.elements.notes.value = goal?.notes || "";
+  $("#goalRevenueActual").textContent = formatMoney(data.actual.revenue_cents);
+  $("#goalExpenseActual").textContent = formatMoney(data.actual.expense_cents);
+  $("#goalRevenueProjection").textContent = formatMoney(data.projection.revenue_cents);
+  $("#goalResultProjection").textContent = formatMoney(data.projection.result_cents);
+  $("#goalRevenueProgress").textContent = goal ? `${data.progress.revenue_percent}% da meta · faltam ${formatMoney(data.progress.revenue_remaining_cents)}` : "Sem meta cadastrada";
+  $("#goalExpenseProgress").textContent = goal ? `${data.progress.expense_percent}% do limite · saldo ${formatMoney(data.progress.expense_available_cents)}` : "Sem limite cadastrado";
+  $("#goalStatusLabel").textContent = goal ? `Metas cadastradas para ${state.month}` : `Sem metas para ${state.month}`;
+  const entries = [
+    ["Receita", data.actual.revenue_cents, goal?.revenue_target_cents || 0, data.progress.revenue_percent, "blue"],
+    ["Despesas", data.actual.expense_cents, goal?.expense_limit_cents || 0, data.progress.expense_percent, data.progress.expense_percent > 100 ? "danger" : "amber"],
+    ["Novos clientes", data.actual.new_clients, goal?.new_clients_target || 0, data.progress.clients_percent, "violet"],
+  ];
+  $("#goalProgressList").innerHTML = entries.map(([label, actual, target, percent, color], index) => `
+    <div class="goal-progress-item"><div><strong>${label}</strong><span>${index < 2 ? `${formatMoney(actual)} de ${target ? formatMoney(target) : "meta não definida"}` : `${integer.format(actual)} de ${target || "meta não definida"}`}</span></div><div class="progress"><i class="${color}" style="width:${Math.min(percent, 100)}%"></i></div><b>${percent}%</b></div>`).join("");
+  requestAnimationFrame(() => drawGoalsChart(data.history));
+}
+
+async function saveGoal(event) {
+  event.preventDefault();
+  const payload = Object.fromEntries(new FormData(event.currentTarget));
+  payload.month = state.month;
+  try {
+    state.goals = await api("/api/goals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    toast("Metas salvas para o período."); await loadGoals();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+function drawGoalsChart(rows) {
+  const canvas = $("#goalsChart");
+  const { context, width, height } = prepareCanvas(canvas, 240);
+  context.clearRect(0, 0, width, height);
+  const padding = { top: 18, right: 12, bottom: 34, left: 52 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maximum = Math.max(...rows.flatMap(row => [row.revenue_cents, row.expense_cents, row.goal?.revenue_target_cents || 0]), 1);
+  context.font = "10px Inter, sans-serif";
+  for (let step = 0; step <= 4; step++) {
+    const y = padding.top + plotHeight / 4 * step;
+    context.strokeStyle = "#edf0f4"; context.beginPath(); context.moveTo(padding.left, y); context.lineTo(width - padding.right, y); context.stroke();
+    context.fillStyle = "#8993a4"; context.textAlign = "right"; context.fillText(`${Math.round((maximum - maximum / 4 * step) / 100000)}k`, padding.left - 8, y + 3);
+  }
+  const group = plotWidth / rows.length;
+  rows.forEach((row, index) => {
+    const center = padding.left + group * index + group / 2;
+    [[row.revenue_cents, "#2f6fed", -10], [row.expense_cents, "#d94d5c", 2]].forEach(([value, color, offset]) => {
+      const barHeight = value / maximum * plotHeight; context.fillStyle = color; context.fillRect(center + offset, padding.top + plotHeight - barHeight, 8, barHeight);
+    });
+    context.fillStyle = "#8993a4"; context.textAlign = "center"; context.fillText(row.month.slice(5), center, height - 10);
+  });
 }
 
 async function loadBudgets() {

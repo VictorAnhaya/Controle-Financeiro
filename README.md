@@ -1,4 +1,4 @@
-# Bolotti Finance — Versão 4
+# Bolotti Finance — Versão 5
 
 Aplicação de controle financeiro criada a partir do relatório de NFS-e do Grupo Bolotti Reis. A base inicial contém as 25 notas ativas de agosto de 2026 (R$ 230.537,13) e as 4 notas canceladas (R$ 48.692,37), conciliadas com a planilha de origem.
 
@@ -23,6 +23,13 @@ Aplicação de controle financeiro criada a partir do relatório de NFS-e do Gru
 - quantidade de notas, participação no faturamento e ticket médio por cliente;
 - indicadores de concentração dos 3 e 5 maiores clientes;
 - classificação mensal ou consolidada de todo o histórico;
+- cadastro completo de clientes, com CPF/CNPJ, contato, e-mail, telefone, aquisição, situação e observações;
+- migração automática da carteira existente a partir das receitas, sem recadastro manual;
+- vínculo entre cliente e lançamento, com preenchimento automático em novas receitas;
+- acompanhamento de receita mensal e acumulada por cliente;
+- metas mensais de receita, limite de despesas e novos clientes;
+- projeção de fechamento do mês e histórico comparativo dos últimos seis períodos;
+- indicadores de atingimento, valores restantes e resultado financeiro projetado;
 - banco de dados SQLite local e valores armazenados em centavos;
 - interface responsiva para computador, tablet e celular.
 - tela de login com sessões seguras armazenadas no banco;
@@ -55,11 +62,7 @@ python -m venv .venv
 6. Abra `http://127.0.0.1:8080` no navegador.
 7. No primeiro acesso, crie o usuário administrador. Depois, use a aba **Usuários** para cadastrar as demais pessoas.
 
-O app principal não precisa de pacotes externos. O comando acima instala os recursos de Excel, PDF e imagem.
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
+O comando acima instala também os recursos de Excel, PDF e imagem.
 
 ### Leitura de notas fiscais
 
@@ -116,6 +119,7 @@ O repositório GitHub deste projeto deve ser **privado**, pois a base inicial co
 5. Abra o endereço `onrender.com` criado.
 6. Na tela de primeiro acesso, cadastre o administrador.
 7. Entre na aba **Usuários** para cadastrar os demais acessos sem precisar alterar variáveis no Render.
+8. As abas **Clientes** e **Metas e projeções** ficam disponíveis para os usuários autenticados. Os clientes das receitas já existentes são criados automaticamente na primeira inicialização desta versão.
 
 O Blueprint usa um serviço pago com disco persistente de 1 GB. Essa configuração é necessária porque o plano gratuito perde o banco SQLite e os documentos anexados quando o serviço reinicia. O Dockerfile também instala o Tesseract em português para manter a leitura OCR de imagens no servidor.
 
