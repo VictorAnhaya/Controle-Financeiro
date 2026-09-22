@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import json
 import mimetypes
-import secrets
 import traceback
+from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from .auth import AuthError, AuthService
 from .config import AppConfig
 from .document_reader import DocumentReadError
 from .importer import SpreadsheetImportError
@@ -22,6 +21,7 @@ class FinanceHttpApplication:
     def __init__(self, config: AppConfig, service: FinanceService):
         self.config = config
         self.service = service
+        self.auth = AuthService(service.repository.database)
 
     def serve(self) -> None:
         handler_class = self._handler_class()
@@ -37,10 +37,11 @@ class FinanceHttpApplication:
 
     def _handler_class(self) -> type[BaseHTTPRequestHandler]:
         service = self.service
+        auth = self.auth
         config = self.config
 
         class RequestHandler(BaseHTTPRequestHandler):
-            server_version = "BolottiFinance/3.0"
+            server_version = "BolottiFinance/4.0"
 
             def log_message(self, format: str, *args: Any) -> None:
                 print(f"[{self.log_date_time_string()}] {format % args}")
@@ -50,8 +51,25 @@ class FinanceHttpApplication:
                     parsed = urlparse(self.path)
                     if parsed.path == "/api/health":
                         return self._json({"status": "ok"})
-                    if not self._authorize():
-                        return
+                    if parsed.path == "/api/auth/status":
+                        user = self._current_user()
+                        return self._json(
+                            {
+                                "setup_required": auth.setup_required(),
+                                "authenticated": user is not None,
+                                "user": user,
+                            }
+                        )
+                    if parsed.path.startswith("/api/"):
+                        user = self._require_user()
+                        if user is None:
+                            return
+                    else:
+                        return self._serve_static(parsed.path)
+                    if parsed.path == "/api/users":
+                        if self._require_admin(user) is None:
+                            return
+                        return self._json(auth.list_users())
                     if parsed.path == "/api/meta":
                         return self._json(service.metadata())
                     if parsed.path == "/api/dashboard":
@@ -90,15 +108,42 @@ class FinanceHttpApplication:
                             "text/csv; charset=utf-8",
                             headers={"Content-Disposition": 'attachment; filename="relatorio-financeiro.csv"'},
                         )
-                    return self._serve_static(parsed.path)
+                    return self._json({"error": "Rota não encontrada."}, HTTPStatus.NOT_FOUND)
                 except Exception as exc:
                     self._handle_exception(exc)
 
             def do_POST(self) -> None:
                 try:
-                    if not self._authorize():
-                        return
                     parsed = urlparse(self.path)
+                    if parsed.path == "/api/auth/setup":
+                        user, token = auth.setup_admin(self._json_body())
+                        return self._json(
+                            {"user": user},
+                            HTTPStatus.CREATED,
+                            headers={"Set-Cookie": self._session_cookie(token)},
+                        )
+                    if parsed.path == "/api/auth/login":
+                        payload = self._json_body()
+                        user, token = auth.authenticate(
+                            str(payload.get("username") or ""),
+                            str(payload.get("password") or ""),
+                        )
+                        return self._json(
+                            {"user": user},
+                            headers={"Set-Cookie": self._session_cookie(token)},
+                        )
+                    if parsed.path == "/api/auth/logout":
+                        auth.logout(self._session_token())
+                        return self._json(
+                            {"ok": True}, headers={"Set-Cookie": self._clear_session_cookie()}
+                        )
+                    user = self._require_user()
+                    if user is None:
+                        return
+                    if parsed.path == "/api/users":
+                        if self._require_admin(user) is None:
+                            return
+                        return self._json(auth.create_user(self._json_body()), HTTPStatus.CREATED)
                     if parsed.path == "/api/transactions":
                         return self._json(service.create_transaction(self._json_body()), HTTPStatus.CREATED)
                     if parsed.path == "/api/budgets":
@@ -126,9 +171,20 @@ class FinanceHttpApplication:
 
             def do_PUT(self) -> None:
                 try:
-                    if not self._authorize():
-                        return
                     parsed = urlparse(self.path)
+                    user = self._require_user()
+                    if user is None:
+                        return
+                    user_id = self._user_id(parsed.path)
+                    if user_id is not None:
+                        if self._require_admin(user) is None:
+                            return
+                        updated_user = auth.update_user(user_id, self._json_body(), user["id"])
+                        if updated_user is None:
+                            return self._json(
+                                {"error": "Usuário não encontrado."}, HTTPStatus.NOT_FOUND
+                            )
+                        return self._json(updated_user)
                     transaction_id = self._transaction_id(parsed.path)
                     if transaction_id is None:
                         return self._json({"error": "Rota não encontrada."}, HTTPStatus.NOT_FOUND)
@@ -141,7 +197,7 @@ class FinanceHttpApplication:
 
             def do_DELETE(self) -> None:
                 try:
-                    if not self._authorize():
+                    if self._require_user() is None:
                         return
                     parsed = urlparse(self.path)
                     transaction_id = self._transaction_id(parsed.path)
@@ -154,39 +210,82 @@ class FinanceHttpApplication:
                 except Exception as exc:
                     self._handle_exception(exc)
 
-            def _authorize(self) -> bool:
-                if config.auth_username is None and config.auth_password is None:
-                    return True
+            def _session_token(self) -> str | None:
+                cookie = SimpleCookie()
+                try:
+                    cookie.load(self.headers.get("Cookie", ""))
+                except Exception:
+                    return None
+                morsel = cookie.get("finance_session")
+                return morsel.value if morsel else None
 
-                authorization = self.headers.get("Authorization", "")
-                scheme, _, encoded = authorization.partition(" ")
-                if scheme.lower() == "basic" and encoded:
-                    try:
-                        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
-                        username, separator, password = decoded.partition(":")
-                    except (binascii.Error, UnicodeDecodeError):
-                        separator = ""
-                        username = password = ""
+            def _current_user(self) -> dict[str, Any] | None:
+                return auth.session_user(self._session_token())
 
-                    if (
-                        separator
-                        and secrets.compare_digest(username, config.auth_username or "")
-                        and secrets.compare_digest(password, config.auth_password or "")
-                    ):
-                        return True
+            def _require_user(self) -> dict[str, Any] | None:
+                user = self._current_user()
+                if user is None:
+                    self._json(
+                        {"error": "Sua sessão expirou. Entre novamente."},
+                        HTTPStatus.UNAUTHORIZED,
+                    )
+                return user
 
-                self._json(
-                    {"error": "Autenticação necessária."},
-                    HTTPStatus.UNAUTHORIZED,
-                    headers={
-                        "WWW-Authenticate": 'Basic realm="Bolotti Finance", charset="UTF-8"'
-                    },
+            def _require_admin(self, user: dict[str, Any]) -> dict[str, Any] | None:
+                if user["role"] != "admin":
+                    self._json(
+                        {"error": "Apenas administradores podem gerenciar usuários."},
+                        HTTPStatus.FORBIDDEN,
+                    )
+                    return None
+                return user
+
+            def _session_cookie(self, token: str) -> str:
+                forwarded_https = (
+                    self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip()
+                    == "https"
                 )
-                return False
+                secure = forwarded_https or self.headers.get("Host", "").endswith(".onrender.com")
+                parts = [
+                    f"finance_session={token}",
+                    "Path=/",
+                    "HttpOnly",
+                    "SameSite=Lax",
+                    f"Max-Age={AuthService.SESSION_HOURS * 3600}",
+                ]
+                if secure:
+                    parts.append("Secure")
+                return "; ".join(parts)
+
+            def _clear_session_cookie(self) -> str:
+                parts = [
+                    "finance_session=",
+                    "Path=/",
+                    "HttpOnly",
+                    "SameSite=Lax",
+                    "Max-Age=0",
+                ]
+                forwarded_https = (
+                    self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip()
+                    == "https"
+                )
+                if forwarded_https or self.headers.get("Host", "").endswith(".onrender.com"):
+                    parts.append("Secure")
+                return "; ".join(parts)
 
             @staticmethod
             def _transaction_id(path: str) -> int | None:
                 prefix = "/api/transactions/"
+                if not path.startswith(prefix):
+                    return None
+                try:
+                    return int(path.removeprefix(prefix))
+                except ValueError:
+                    return None
+
+            @staticmethod
+            def _user_id(path: str) -> int | None:
+                prefix = "/api/users/"
                 if not path.startswith(prefix):
                     return None
                 try:
@@ -279,6 +378,11 @@ class FinanceHttpApplication:
                 self.wfile.write(data)
 
             def _handle_exception(self, exc: Exception) -> None:
+                if isinstance(exc, AuthError):
+                    payload: dict[str, Any] = {"error": str(exc)}
+                    if exc.fields:
+                        payload["fields"] = exc.fields
+                    return self._json(payload, HTTPStatus(exc.status))
                 if isinstance(exc, (ValidationError, SpreadsheetImportError, DocumentReadError)):
                     payload: dict[str, Any] = {"error": str(exc)}
                     if isinstance(exc, ValidationError) and exc.fields:

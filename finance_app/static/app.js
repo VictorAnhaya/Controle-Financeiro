@@ -1,5 +1,7 @@
 const state = {
   view: "dashboard",
+  user: null,
+  users: [],
   month: "",
   metadata: { categories: [], cost_centers: [] },
   transactions: [],
@@ -37,6 +39,7 @@ async function api(path, options = {}) {
   const response = await fetch(path, options);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ error: "Falha ao processar a solicitação." }));
+    if (response.status === 401 && !path.startsWith("/api/auth/")) showAuth(false);
     throw new Error(payload.error || "Falha ao processar a solicitação.");
   }
   if (response.status === 204) return null;
@@ -50,13 +53,90 @@ function queryString(values) {
 }
 
 async function initialize() {
-  wireEvents();
+  wireAuthEvents();
+  const status = await api("/api/auth/status");
+  if (!status.authenticated) {
+    showAuth(status.setup_required);
+    return;
+  }
+  await enterApplication(status.user);
+}
+
+function wireAuthEvents() {
+  $("#loginForm").addEventListener("submit", login);
+  $("#setupForm").addEventListener("submit", setupAdministrator);
+  $("#logoutButton").addEventListener("click", logout);
+}
+
+function showAuth(setupRequired) {
+  state.user = null;
+  document.body.classList.remove("authenticated");
+  $("#setupForm").hidden = !setupRequired;
+  $("#loginForm").hidden = setupRequired;
+  $("#loginError").textContent = "";
+  $("#setupError").textContent = "";
+}
+
+async function enterApplication(user) {
+  state.user = user;
+  document.body.classList.add("authenticated");
+  $("#currentUserName").textContent = user.name;
+  $("#currentUserRole").textContent = user.role === "admin" ? "Administrador" : "Usuário comum";
+  $("#userAvatar").textContent = user.name.trim().charAt(0).toUpperCase() || "U";
+  $$(".admin-only").forEach(element => { element.hidden = user.role !== "admin"; });
+  if (!enterApplication.wired) {
+    wireEvents();
+    enterApplication.wired = true;
+  }
   state.metadata = await api("/api/meta");
   const currentMonth = new Date().toISOString().slice(0, 7);
   state.month = state.metadata.latest_month || currentMonth;
   $("#monthPicker").value = state.month;
   populateDataLists();
   await loadCurrentView();
+}
+
+async function login(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  $("#loginError").textContent = "";
+  try {
+    const payload = Object.fromEntries(new FormData(form));
+    const result = await api("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    form.reset();
+    await enterApplication(result.user);
+  } catch (error) { $("#loginError").textContent = error.message; }
+}
+
+async function setupAdministrator(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form));
+  $("#setupError").textContent = "";
+  if (payload.password !== payload.password_confirmation) {
+    $("#setupError").textContent = "A confirmação da senha não corresponde.";
+    return;
+  }
+  delete payload.password_confirmation;
+  try {
+    const result = await api("/api/auth/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    form.reset();
+    await enterApplication(result.user);
+    toast("Administrador criado com sucesso.");
+  } catch (error) { $("#setupError").textContent = error.message; }
+}
+
+async function logout() {
+  try { await api("/api/auth/logout", { method: "POST" }); }
+  finally { showAuth(false); }
 }
 
 function populateDataLists() {
@@ -88,6 +168,8 @@ function wireEvents() {
   $("#rankingScope").addEventListener("change", loadRanking);
   $("#rankingSearch").addEventListener("input", () => renderRankingTable(state.ranking));
   $("#exportButton").addEventListener("click", exportReport);
+  $("#newUserButton").addEventListener("click", () => openUserDialog());
+  $("#userForm").addEventListener("submit", saveUser);
   $("#clearFiltersButton").addEventListener("click", clearFilters);
   ["#kindFilter", "#statusFilter", "#categoryFilter"].forEach(selector => $(selector).addEventListener("change", loadTransactions));
   $("#searchFilter").addEventListener("input", debounce(loadTransactions, 300));
@@ -95,8 +177,9 @@ function wireEvents() {
 }
 
 function switchView(view) {
+  if (view === "users" && state.user?.role !== "admin") return;
   state.view = view;
-  const titles = { dashboard: "Visão geral", transactions: "Lançamentos", documents: "Notas fiscais", ranking: "Ranking de clientes", budgets: "Orçamentos", reports: "Relatórios" };
+  const titles = { dashboard: "Visão geral", transactions: "Lançamentos", documents: "Notas fiscais", ranking: "Ranking de clientes", budgets: "Orçamentos", reports: "Relatórios", users: "Usuários" };
   $("#pageTitle").textContent = titles[view];
   $$(".view").forEach(element => element.classList.remove("active"));
   $(`#${view}View`).classList.add("active");
@@ -112,6 +195,7 @@ async function loadCurrentView() {
   if (state.view === "ranking") return loadRanking();
   if (state.view === "budgets") return loadBudgets();
   if (state.view === "reports") return loadReports();
+  if (state.view === "users") return loadUsers();
 }
 
 async function loadDashboard() {
@@ -494,6 +578,72 @@ async function importWorkbook(event) {
     state.metadata = await api("/api/meta"); populateDataLists(); await loadCurrentView();
   } catch (error) { toast(error.message, "error"); }
   finally { event.target.value = ""; }
+}
+
+function formatDateTime(value) {
+  if (!value) return "Nunca entrou";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(date);
+}
+
+async function loadUsers() {
+  const users = await api("/api/users");
+  state.users = users;
+  $("#usersTable").innerHTML = users.length ? users.map(user => `
+    <tr>
+      <td class="user-name"><strong>${escapeHtml(user.name)}</strong><small>Cadastrado em ${formatDateTime(user.created_at)}</small></td>
+      <td>${escapeHtml(user.username)}</td>
+      <td><span class="badge ${user.role}">${user.role === "admin" ? "Administrador" : "Usuário comum"}</span></td>
+      <td><span class="badge ${user.is_active ? "active" : "inactive"}">${user.is_active ? "Ativo" : "Inativo"}</span></td>
+      <td>${formatDateTime(user.last_login_at)}</td>
+      <td><div class="row-actions"><button data-edit-user="${user.id}">Editar</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="6" class="empty-state">Nenhum usuário cadastrado.</td></tr>`;
+  $$('[data-edit-user]').forEach(button => button.addEventListener("click", () => openUserDialog(Number(button.dataset.editUser))));
+}
+
+function openUserDialog(id = null) {
+  const form = $("#userForm");
+  form.reset();
+  $("#userFormError").textContent = "";
+  form.elements.id.value = id || "";
+  form.elements.role.value = "user";
+  form.elements.is_active.checked = true;
+  form.elements.password.required = !id;
+  $("#passwordHelp").textContent = id
+    ? "Deixe em branco para manter a senha atual."
+    : "Obrigatória, com no mínimo 8 caracteres.";
+  $("#userDialogTitle").textContent = id ? "Editar usuário" : "Novo usuário";
+  if (id) {
+    const user = state.users.find(item => item.id === id);
+    if (!user) return;
+    form.elements.name.value = user.name;
+    form.elements.username.value = user.username;
+    form.elements.role.value = user.role;
+    form.elements.is_active.checked = user.is_active;
+  }
+  $("#userDialog").showModal();
+}
+
+async function saveUser(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (event.submitter?.value === "cancel") { $("#userDialog").close(); return; }
+  const payload = Object.fromEntries(new FormData(form));
+  const id = payload.id;
+  delete payload.id;
+  payload.is_active = form.elements.is_active.checked;
+  if (!payload.password) delete payload.password;
+  try {
+    await api(id ? `/api/users/${id}` : "/api/users", {
+      method: id ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    $("#userDialog").close();
+    toast(id ? "Usuário atualizado." : "Usuário criado com sucesso.");
+    await loadUsers();
+  } catch (error) { $("#userFormError").textContent = error.message; }
 }
 
 function debounce(callback, delay) {

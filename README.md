@@ -1,4 +1,4 @@
-# Bolotti Finance — Versão 3.1
+# Bolotti Finance — Versão 4
 
 Aplicação de controle financeiro criada a partir do relatório de NFS-e do Grupo Bolotti Reis. A base inicial contém as 25 notas ativas de agosto de 2026 (R$ 230.537,13) e as 4 notas canceladas (R$ 48.692,37), conciliadas com a planilha de origem.
 
@@ -25,6 +25,10 @@ Aplicação de controle financeiro criada a partir do relatório de NFS-e do Gru
 - classificação mensal ou consolidada de todo o histórico;
 - banco de dados SQLite local e valores armazenados em centavos;
 - interface responsiva para computador, tablet e celular.
+- tela de login com sessões seguras armazenadas no banco;
+- criação do primeiro administrador no primeiro acesso;
+- aba de usuários exclusiva para administradores;
+- criação, edição, alteração de senha, ativação e desativação de usuários.
 
 ## Como executar no VS Code — Windows 11
 
@@ -49,6 +53,7 @@ python -m venv .venv
 ```
 
 6. Abra `http://127.0.0.1:8080` no navegador.
+7. No primeiro acesso, crie o usuário administrador. Depois, use a aba **Usuários** para cadastrar as demais pessoas.
 
 O app principal não precisa de pacotes externos. O comando acima instala os recursos de Excel, PDF e imagem.
 
@@ -71,6 +76,7 @@ Não existem arquivos `.bat` nesta versão; toda execução é feita pelo termin
 
 ```text
 finance_app/
+  auth.py         autenticação, senhas, sessões e usuários
   config.py       configuração por variáveis de ambiente
   database.py     conexão, transações e migrações SQLite
   repository.py   consultas e persistência
@@ -89,7 +95,7 @@ A separação entre transporte HTTP, regras de negócio e persistência evita mi
 
 ## Banco de dados e backup
 
-O banco é criado automaticamente em `data/finance.db`. Para um backup completo, encerre o app e copie o banco junto com a pasta `data/documents`. No computador local, a aplicação fica limitada a `127.0.0.1` por padrão. No Render, o arquivo `render.yaml` ativa um disco persistente e solicita usuário e senha antes da primeira publicação.
+O banco é criado automaticamente em `data/finance.db`. Para um backup completo, encerre o app e copie o banco junto com a pasta `data/documents`. No computador local, a aplicação fica limitada a `127.0.0.1` por padrão. No Render, o arquivo `render.yaml` ativa um disco persistente. Usuários, senhas e sessões ficam no mesmo banco persistente.
 
 Variáveis opcionais:
 
@@ -98,7 +104,6 @@ Variáveis opcionais:
 - `FINANCE_DATABASE`: altera o caminho do banco;
 - `FINANCE_DATA_DIR`: altera a pasta de dados;
 - `FINANCE_HOST`: altera o endereço de escuta. Não use `0.0.0.0` em rede sem adicionar autenticação e HTTPS.
-- `FINANCE_USERNAME` e `FINANCE_PASSWORD`: ativam a proteção HTTP. As duas variáveis devem ser definidas juntas.
 
 ## Publicação no Render
 
@@ -106,13 +111,15 @@ O repositório GitHub deste projeto deve ser **privado**, pois a base inicial co
 
 1. Crie um repositório privado no GitHub e envie o conteúdo da pasta `bolotti-finance` para a raiz dele.
 2. No Render, escolha **New > Blueprint** e conecte esse repositório.
-3. O Render localizará o arquivo `render.yaml` e solicitará os valores de `FINANCE_USERNAME` e `FINANCE_PASSWORD`.
-4. Escolha um usuário e uma senha forte, confirme a criação e aguarde o deploy.
-5. Abra o endereço `onrender.com` criado. O navegador solicitará as credenciais antes de mostrar o sistema.
+3. O Render localizará o arquivo `render.yaml` e preparará o serviço e o disco persistente.
+4. Confirme a criação e aguarde o deploy.
+5. Abra o endereço `onrender.com` criado.
+6. Na tela de primeiro acesso, cadastre o administrador.
+7. Entre na aba **Usuários** para cadastrar os demais acessos sem precisar alterar variáveis no Render.
 
 O Blueprint usa um serviço pago com disco persistente de 1 GB. Essa configuração é necessária porque o plano gratuito perde o banco SQLite e os documentos anexados quando o serviço reinicia. O Dockerfile também instala o Tesseract em português para manter a leitura OCR de imagens no servidor.
 
-Essa proteção usa uma credencial compartilhada. Ela impede o acesso público, mas não cria contas individuais nem registra qual integrante fez cada alteração.
+As senhas são armazenadas com hash PBKDF2 e salt individual. A sessão expira depois de 12 horas, usuários inativos não conseguem entrar e apenas administradores podem acessar a aba de usuários.
 
 ## Testes
 

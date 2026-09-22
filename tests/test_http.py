@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import base64
 import json
 import tempfile
 import threading
 import unittest
+from http.cookiejar import CookieJar
 from urllib.error import HTTPError
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from urllib.request import Request, urlopen
+from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 from finance_app.config import AppConfig
 from finance_app.database import Database
@@ -41,6 +41,17 @@ class HttpApplicationTests(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+        self.opener = build_opener(HTTPCookieProcessor(CookieJar()))
+        setup_request = Request(
+            f"{self.base_url}/api/auth/setup",
+            data=json.dumps(
+                {"name": "Administrador", "username": "admin", "password": "senha-segura"}
+            ).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.opener.open(setup_request) as response:
+            self.assertEqual(response.status, 201)
 
     def tearDown(self) -> None:
         self.server.shutdown()
@@ -49,15 +60,15 @@ class HttpApplicationTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def test_dashboard_and_static_application_are_available(self) -> None:
-        with urlopen(f"{self.base_url}/api/dashboard?month=2026-08") as response:
+        with self.opener.open(f"{self.base_url}/api/dashboard?month=2026-08") as response:
             payload = json.load(response)
         self.assertEqual(payload["totals"]["income_cents"], 23_053_713)
 
-        with urlopen(f"{self.base_url}/") as response:
+        with self.opener.open(f"{self.base_url}/") as response:
             html = response.read().decode("utf-8")
         self.assertIn("Bolotti Finance", html)
 
-        with urlopen(f"{self.base_url}/api/ranking?month=2026-08&scope=month") as response:
+        with self.opener.open(f"{self.base_url}/api/ranking?month=2026-08&scope=month") as response:
             ranking = json.load(response)
         self.assertEqual(ranking["summary"]["client_count"], 17)
         self.assertEqual(ranking["items"][0]["position"], 1)
@@ -79,7 +90,7 @@ class HttpApplicationTests(unittest.TestCase):
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with urlopen(request) as response:
+        with self.opener.open(request) as response:
             payload = json.load(response)
         self.assertEqual(payload["amount_cents"], 49_990)
 
@@ -91,7 +102,7 @@ class HttpApplicationTests(unittest.TestCase):
             method="POST",
             headers={"Content-Type": "application/xml", "X-Filename": "nota-123.xml"},
         )
-        with urlopen(analyze_request) as response:
+        with self.opener.open(analyze_request) as response:
             document = json.load(response)
         self.assertEqual(document["document_number"], "123")
 
@@ -111,7 +122,7 @@ class HttpApplicationTests(unittest.TestCase):
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with urlopen(post_request) as response:
+        with self.opener.open(post_request) as response:
             linked = json.load(response)
         self.assertEqual(linked["transaction"]["amount_cents"], 123_456)
         self.assertEqual(linked["document"]["extraction_status"], "linked")
@@ -131,14 +142,13 @@ class HttpAuthenticationTests(unittest.TestCase):
             seed_path=PROJECT_ROOT / "data" / "initial_transactions.json",
             static_path=PROJECT_ROOT / "finance_app" / "static",
             documents_path=temporary_path / "documents",
-            auth_username="equipe",
-            auth_password="senha-segura",
         )
         application = FinanceHttpApplication(config, service)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), application._handler_class())
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+        self.admin_opener = build_opener(HTTPCookieProcessor(CookieJar()))
 
     def tearDown(self) -> None:
         self.server.shutdown()
@@ -150,18 +160,64 @@ class HttpAuthenticationTests(unittest.TestCase):
         with urlopen(f"{self.base_url}/api/health") as response:
             self.assertEqual(json.load(response), {"status": "ok"})
 
-    def test_application_requires_valid_credentials(self) -> None:
+    def test_setup_login_and_user_administration(self) -> None:
+        with urlopen(f"{self.base_url}/api/auth/status") as response:
+            status = json.load(response)
+        self.assertTrue(status["setup_required"])
+        self.assertFalse(status["authenticated"])
+
         with self.assertRaises(HTTPError) as context:
             urlopen(f"{self.base_url}/api/meta")
         self.assertEqual(context.exception.code, 401)
 
-        credentials = base64.b64encode(b"equipe:senha-segura").decode("ascii")
-        request = Request(
-            f"{self.base_url}/api/meta",
-            headers={"Authorization": f"Basic {credentials}"},
+        setup_request = Request(
+            f"{self.base_url}/api/auth/setup",
+            data=json.dumps(
+                {"name": "Administrador", "username": "admin", "password": "senha-segura"}
+            ).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
         )
-        with urlopen(request) as response:
+        with self.admin_opener.open(setup_request) as response:
+            setup = json.load(response)
+        self.assertEqual(setup["user"]["role"], "admin")
+
+        with self.admin_opener.open(f"{self.base_url}/api/meta") as response:
             self.assertEqual(response.status, 200)
+
+        create_user = Request(
+            f"{self.base_url}/api/users",
+            data=json.dumps(
+                {
+                    "name": "Maria Silva",
+                    "username": "maria",
+                    "password": "outra-senha",
+                    "role": "user",
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.admin_opener.open(create_user) as response:
+            created = json.load(response)
+        self.assertEqual(created["username"], "maria")
+
+        user_opener = build_opener(HTTPCookieProcessor(CookieJar()))
+        login_request = Request(
+            f"{self.base_url}/api/auth/login",
+            data=json.dumps({"username": "maria", "password": "outra-senha"}).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with user_opener.open(login_request) as response:
+            logged_in = json.load(response)
+        self.assertEqual(logged_in["user"]["role"], "user")
+
+        with user_opener.open(f"{self.base_url}/api/meta") as response:
+            self.assertEqual(response.status, 200)
+        with self.assertRaises(HTTPError) as forbidden:
+            user_opener.open(f"{self.base_url}/api/users")
+        self.assertEqual(forbidden.exception.code, 403)
 
 
 if __name__ == "__main__":

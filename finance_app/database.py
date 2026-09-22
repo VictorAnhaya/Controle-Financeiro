@@ -87,6 +87,26 @@ class Database:
                     FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+                    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_login_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_transactions_date
                     ON transactions(transaction_date);
                 CREATE INDEX IF NOT EXISTS idx_transactions_kind_status
@@ -99,6 +119,10 @@ class Database:
                     ON fiscal_documents(issue_date);
                 CREATE INDEX IF NOT EXISTS idx_fiscal_documents_status
                     ON fiscal_documents(extraction_status);
+                CREATE INDEX IF NOT EXISTS idx_sessions_user
+                    ON sessions(user_id);
+                CREATE INDEX IF NOT EXISTS idx_sessions_expiration
+                    ON sessions(expires_at);
                 """
             )
             self._ensure_column(connection, "transactions", "counterparty_tax_id", "TEXT")

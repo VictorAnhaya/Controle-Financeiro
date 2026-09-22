@@ -8,6 +8,30 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <section class="auth-screen" id="authScreen" aria-live="polite">
+    <div class="auth-card">
+      <div class="auth-brand"><span>BR</span><div><strong>Bolotti Finance</strong><small>Acesso ao controle gerencial</small></div></div>
+
+      <form id="loginForm" class="auth-form" hidden>
+        <div><span class="panel-kicker">Acesso protegido</span><h1>Entrar no sistema</h1><p>Informe o usuário e a senha cadastrados pelo administrador.</p></div>
+        <label>Usuário<input name="username" autocomplete="username" required autofocus></label>
+        <label>Senha<input type="password" name="password" autocomplete="current-password" required></label>
+        <p class="form-error" id="loginError" role="alert"></p>
+        <button class="button primary full" type="submit">Entrar</button>
+      </form>
+
+      <form id="setupForm" class="auth-form" hidden>
+        <div><span class="panel-kicker">Primeiro acesso</span><h1>Criar administrador</h1><p>Este será o primeiro usuário e poderá cadastrar os demais pela aba Usuários.</p></div>
+        <label>Nome completo<input name="name" autocomplete="name" required maxlength="120"></label>
+        <label>Usuário<input name="username" autocomplete="username" required minlength="3" maxlength="50" placeholder="Ex.: administrador"></label>
+        <label>Senha<input type="password" name="password" autocomplete="new-password" required minlength="8"></label>
+        <label>Confirmar senha<input type="password" name="password_confirmation" autocomplete="new-password" required minlength="8"></label>
+        <p class="form-error" id="setupError" role="alert"></p>
+        <button class="button primary full" type="submit">Criar administrador</button>
+      </form>
+    </div>
+  </section>
+
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
       <div class="brand">
@@ -22,11 +46,13 @@
         <button class="nav-item" data-view="ranking"><span>★</span> Ranking de clientes</button>
         <button class="nav-item" data-view="budgets"><span>◎</span> Orçamentos</button>
         <button class="nav-item" data-view="reports"><span>▤</span> Relatórios</button>
+        <button class="nav-item admin-only" data-view="users" hidden><span>♙</span> Usuários</button>
       </nav>
 
-      <div class="sidebar-note">
-        <span class="status-dot"></span>
-        <div><strong>Dados locais</strong><small>Armazenados neste computador</small></div>
+      <div class="sidebar-user">
+        <span class="user-avatar" id="userAvatar">U</span>
+        <div><strong id="currentUserName">Usuário</strong><small id="currentUserRole">Acesso ao sistema</small></div>
+        <button id="logoutButton" type="button" title="Sair" aria-label="Sair do sistema">↪</button>
       </div>
     </aside>
 
@@ -162,6 +188,16 @@
         <div class="metric-grid report-metrics" id="reportMetrics"></div>
         <article class="panel"><div class="panel-header"><div><span class="panel-kicker">Análise gerencial</span><h2>Indicadores do período</h2></div></div><div id="reportInsights" class="insights-grid"></div></article>
       </section>
+
+      <section class="view" id="usersView">
+        <div class="users-header">
+          <div><span class="panel-kicker">Administração</span><h2>Usuários do sistema</h2><p>Cadastre as pessoas que podem acessar o controle financeiro e defina o nível de permissão.</p></div>
+          <button class="button primary" id="newUserButton">+ Novo usuário</button>
+        </div>
+        <article class="panel">
+          <div class="table-wrap"><table class="users-table"><thead><tr><th>Nome</th><th>Usuário</th><th>Permissão</th><th>Status</th><th>Último acesso</th><th></th></tr></thead><tbody id="usersTable"></tbody></table></div>
+        </article>
+      </section>
     </main>
   </div>
 
@@ -221,6 +257,22 @@
       <div id="documentWarnings" class="document-warnings"></div>
       <p class="form-error" id="documentFormError" role="alert"></p>
       <div class="dialog-actions"><button class="button secondary" value="cancel">Manter sem lançamento</button><button class="button primary" type="submit" value="default">Conferi e quero salvar</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="userDialog">
+    <form method="dialog" id="userForm" class="dialog-form">
+      <div class="dialog-header"><div><span class="panel-kicker">Controle de acesso</span><h2 id="userDialogTitle">Novo usuário</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></div>
+      <input type="hidden" name="id">
+      <div class="form-grid">
+        <label class="span-2">Nome completo *<input name="name" required maxlength="120"></label>
+        <label>Usuário *<input name="username" required minlength="3" maxlength="50" placeholder="Ex.: maria.silva"></label>
+        <label>Permissão *<select name="role" required><option value="user">Usuário comum</option><option value="admin">Administrador</option></select></label>
+        <label class="span-2">Senha <input type="password" name="password" minlength="8" autocomplete="new-password"><small id="passwordHelp">Mínimo de 8 caracteres.</small></label>
+        <label class="user-active-field span-2"><input type="checkbox" name="is_active" checked><span>Usuário ativo e autorizado a entrar</span></label>
+      </div>
+      <p class="form-error" id="userFormError" role="alert"></p>
+      <div class="dialog-actions"><button class="button secondary" value="cancel">Cancelar</button><button class="button primary" type="submit" value="default">Salvar usuário</button></div>
     </form>
   </dialog>
 

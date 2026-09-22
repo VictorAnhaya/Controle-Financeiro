@@ -18,8 +18,6 @@ class AppConfigTests(unittest.TestCase):
                     "PORT": "10000",
                     "FINANCE_PORT": "8080",
                     "FINANCE_DATA_DIR": temporary_directory,
-                    "FINANCE_USERNAME": "equipe",
-                    "FINANCE_PASSWORD": "senha-segura",
                 },
                 clear=True,
             ):
@@ -30,16 +28,6 @@ class AppConfigTests(unittest.TestCase):
         self.assertEqual(config.documents_path, Path(temporary_directory) / "documents")
         self.assertTrue(config.seed_path.name == "initial_transactions.json")
         self.assertNotEqual(config.seed_path.parent, Path(temporary_directory))
-
-    def test_authentication_variables_must_be_defined_together(self) -> None:
-        with patch.dict(
-            os.environ,
-            {"FINANCE_USERNAME": "equipe"},
-            clear=True,
-        ):
-            with self.assertRaises(RuntimeError):
-                AppConfig.from_environment()
-
 
 if __name__ == "__main__":
     unittest.main()
