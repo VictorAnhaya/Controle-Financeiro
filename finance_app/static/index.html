@@ -40,7 +40,8 @@
       </div>
 
       <nav class="nav" aria-label="Navegação principal">
-        <button class="nav-item active" data-view="dashboard"><span>⌂</span> Visão geral</button>
+        <button class="nav-item active" data-view="consolidated"><span>▦</span> Consolidado</button>
+        <button class="nav-item" data-view="dashboard"><span>⌂</span> Visão geral</button>
         <button class="nav-item" data-view="transactions"><span>↕</span> Lançamentos</button>
         <button class="nav-item" data-view="clients"><span>♧</span> Clientes</button>
         <button class="nav-item" data-view="documents"><span>▱</span> Notas fiscais</button>
@@ -62,10 +63,11 @@
       <header class="topbar">
         <button class="icon-button menu-button" id="menuButton" aria-label="Abrir menu">☰</button>
         <div>
-          <p class="eyebrow">Grupo Bolotti Reis</p>
-          <h1 id="pageTitle">Visão geral</h1>
+          <p class="eyebrow">Bolotti Reis + WBK</p>
+          <h1 id="pageTitle">Consolidado</h1>
         </div>
         <div class="topbar-actions">
+          <label class="company-control">Empresa<select id="companyPicker"><option value="all">Consolidado</option></select></label>
           <label class="month-control">Período<input type="month" id="monthPicker"></label>
           <button class="button secondary" id="importButton">Importar Excel</button>
           <input type="file" id="importInput" accept=".xlsx" hidden>
@@ -75,7 +77,25 @@
         </div>
       </header>
 
-      <section class="view active" id="dashboardView">
+      <section class="view active" id="consolidatedView">
+        <div class="report-hero consolidated-hero">
+          <div><span class="panel-kicker">Bolotti Reis + WBK</span><h2>Visão consolidada das empresas</h2><p>Compare faturamento, notas, clientes e cancelamentos no mesmo período, sem duplicar lançamentos.</p></div>
+          <span class="scope-badge">Consolidado</span>
+        </div>
+        <div class="metric-grid">
+          <article class="metric-card income"><div><span>Faturamento líquido</span><strong id="consolidatedRevenue">R$ 0,00</strong><small id="consolidatedInvoiceCount">0 notas ativas</small></div></article>
+          <article class="metric-card expense"><div><span>Notas canceladas</span><strong id="consolidatedCancelled">R$ 0,00</strong><small id="consolidatedCancelledCount">0 canceladas</small></div></article>
+          <article class="metric-card balance"><div><span>Clientes atendidos</span><strong id="consolidatedClients">0</strong><small>CNPJs únicos no período</small></div></article>
+          <article class="metric-card payable"><div><span>Sem empresa definida</span><strong id="unassignedTransactions">0</strong><small>Precisam ser revisados</small></div></article>
+        </div>
+        <div class="company-comparison-grid" id="companyComparisonCards"></div>
+        <article class="panel">
+          <div class="panel-header"><div><span class="panel-kicker">Comparação mensal</span><h2>Faturamento por empresa</h2></div><div class="legend"><span><i class="blue"></i>Receita</span><span><i class="red"></i>Canceladas</span></div></div>
+          <canvas id="companyChart" height="260" aria-label="Comparação das empresas"></canvas>
+        </article>
+      </section>
+
+      <section class="view" id="dashboardView">
         <div class="metric-grid">
           <article class="metric-card income"><div class="metric-icon">↗</div><div><span>Receitas realizadas</span><strong id="incomeMetric">R$ 0,00</strong><small id="incomeCount">0 lançamentos</small></div></article>
           <article class="metric-card expense"><div class="metric-icon">↘</div><div><span>Despesas pagas</span><strong id="expenseMetric">R$ 0,00</strong><small id="expenseCount">0 lançamentos</small></div></article>
@@ -120,7 +140,7 @@
             <label>Categoria<select id="categoryFilter"><option value="">Todas</option></select></label>
             <button class="button secondary" id="clearFiltersButton">Limpar</button>
           </div>
-          <div class="table-wrap transactions-table"><table><thead><tr><th>Data</th><th>Lançamento</th><th>Categoria</th><th>Status</th><th class="align-right">Valor</th><th></th></tr></thead><tbody id="transactionsTable"></tbody></table></div>
+          <div class="table-wrap transactions-table"><table><thead><tr><th>Data</th><th>Empresa</th><th>Lançamento</th><th>Categoria</th><th>Status</th><th class="align-right">Valor</th><th></th></tr></thead><tbody id="transactionsTable"></tbody></table></div>
           <div class="table-footer"><span id="transactionsCount">0 lançamentos</span><strong id="transactionsTotal">R$ 0,00</strong></div>
         </article>
       </section>
@@ -159,7 +179,7 @@
 
           <article class="panel documents-list-panel">
             <div class="panel-header"><div><span class="panel-kicker">Arquivo fiscal</span><h2>Documentos anexados</h2></div><span class="document-count" id="documentCount">0 documentos</span></div>
-            <div class="table-wrap"><table><thead><tr><th>Documento</th><th>Emitente</th><th>Emissão</th><th>Status</th><th class="align-right">Valor</th><th></th></tr></thead><tbody id="documentsTable"></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>Empresa</th><th>Documento</th><th>Emitente</th><th>Emissão</th><th>Status</th><th class="align-right">Valor</th><th></th></tr></thead><tbody id="documentsTable"></tbody></table></div>
           </article>
         </div>
       </section>
@@ -212,6 +232,14 @@
               <div id="goalProgressList" class="goal-progress-list"></div>
             </article>
             <article class="panel"><div class="panel-header"><div><span class="panel-kicker">Últimos seis meses</span><h2>Histórico e referência</h2></div></div><canvas id="goalsChart" height="240" aria-label="Histórico de receitas e despesas"></canvas></article>
+            <article class="panel">
+              <div class="panel-header"><div><span class="panel-kicker">Cenários da planilha</span><h2>Projeção anual</h2></div></div>
+              <div class="table-wrap"><table><thead><tr><th>Cenário</th><th>Faturamento mensal</th><th>Faturamento anual</th><th>Notas/mês</th><th>Notas/ano</th><th>Ticket médio</th></tr></thead><tbody id="goalScenariosTable"></tbody></table></div>
+            </article>
+            <article class="panel">
+              <div class="panel-header"><div><span class="panel-kicker">Sazonalidade</span><h2>Próximos seis meses</h2></div></div>
+              <div class="table-wrap"><table><thead><tr><th>Mês</th><th>Notas estimadas</th><th>Sazonalidade</th><th>Fator</th><th>Faturamento projetado</th><th>Acumulado</th></tr></thead><tbody id="goalForecastTable"></tbody></table></div>
+            </article>
           </div>
         </div>
       </section>
@@ -268,6 +296,7 @@
         <label>Status *<select name="status" required><option value="paid">Pago/recebido</option><option value="pending">Pendente</option><option value="overdue">Vencido</option><option value="cancelled">Cancelado</option></select></label>
         <label>Categoria *<input name="category" list="allCategories" required placeholder="Selecione ou digite"></label>
         <label>Centro de custo<input name="cost_center" list="costCenters" placeholder="Ex.: Administrativo"></label>
+        <label>Empresa *<select name="company_id" id="transactionCompany" required><option value="">Selecione</option></select></label>
         <label class="span-2 income-client-field">Cliente cadastrado<select name="client_id" id="transactionClient"><option value="">Informar manualmente</option></select><small>Disponível para receitas; preenche nome e documento automaticamente.</small></label>
         <label>Fornecedor ou cliente<input name="counterparty" maxlength="180" placeholder="Razão social ou nome"></label>
         <label>CNPJ ou CPF<input name="counterparty_tax_id" maxlength="18" placeholder="00.000.000/0000-00"></label>
@@ -288,6 +317,7 @@
       <input type="hidden" name="document_id">
       <div class="extraction-summary">
         <span class="confidence-badge" id="confidenceBadge">0% de confiança</span>
+        <span class="company-document-badge" id="reviewCompanyName">Empresa</span>
         <span id="documentTypeLabel">Documento fiscal</span>
         <a id="reviewDocumentLink" target="_blank" rel="noopener">Abrir arquivo original</a>
       </div>

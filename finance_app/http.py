@@ -41,7 +41,7 @@ class FinanceHttpApplication:
         config = self.config
 
         class RequestHandler(BaseHTTPRequestHandler):
-            server_version = "BolottiFinance/5.0"
+            server_version = "BolottiFinance/6.0"
 
             def log_message(self, format: str, *args: Any) -> None:
                 print(f"[{self.log_date_time_string()}] {format % args}")
@@ -74,26 +74,40 @@ class FinanceHttpApplication:
                         return self._json(service.metadata())
                     if parsed.path == "/api/dashboard":
                         query = self._query(parsed.query)
-                        return self._json(service.dashboard(query.get("month", "")))
+                        return self._json(
+                            service.dashboard(query.get("month", ""), query.get("company"))
+                        )
+                    if parsed.path == "/api/consolidated":
+                        query = self._query(parsed.query)
+                        return self._json(service.company_comparison(query.get("month", "")))
                     if parsed.path == "/api/ranking":
                         query = self._query(parsed.query)
                         return self._json(
                             service.client_ranking(
-                                query.get("month", ""), query.get("scope", "month")
+                                query.get("month", ""),
+                                query.get("scope", "month"),
+                                query.get("company"),
                             )
                         )
                     if parsed.path == "/api/clients":
                         return self._json(service.list_clients(self._query(parsed.query)))
                     if parsed.path == "/api/goals":
                         query = self._query(parsed.query)
-                        return self._json(service.goal_projection(query.get("month", "")))
+                        return self._json(
+                            service.get_goal_projection(
+                                query.get("month", ""), query.get("company")
+                            )
+                        )
                     if parsed.path == "/api/transactions":
                         return self._json(service.list_transactions(self._query(parsed.query)))
                     if parsed.path == "/api/budgets":
                         query = self._query(parsed.query)
-                        return self._json(service.list_budgets(query.get("month", "")))
+                        return self._json(
+                            service.list_budgets(query.get("month", ""), query.get("company"))
+                        )
                     if parsed.path == "/api/documents":
-                        return self._json(service.list_documents())
+                        query = self._query(parsed.query)
+                        return self._json(service.list_documents(query.get("company")))
                     document_file_id = self._document_action_id(parsed.path, "file")
                     if document_file_id is not None:
                         resolved_file = service.document_file(document_file_id)
@@ -159,13 +173,21 @@ class FinanceHttpApplication:
                         return self._json(service.upsert_budget(self._json_body()), HTTPStatus.CREATED)
                     if parsed.path == "/api/import/nfse":
                         content = self._raw_body(config.max_upload_bytes)
-                        return self._json(service.import_nfse(content), HTTPStatus.CREATED)
+                        return self._json(
+                            service.import_nfse(content, self.headers.get("X-Company-Id")),
+                            HTTPStatus.CREATED,
+                        )
                     if parsed.path == "/api/documents/analyze":
                         content = self._raw_body(config.max_upload_bytes)
                         file_name = unquote(self.headers.get("X-Filename", "documento"))
                         mime_type = self.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0]
                         return self._json(
-                            service.analyze_document(file_name, mime_type, content),
+                            service.analyze_document(
+                                file_name,
+                                mime_type,
+                                content,
+                                self.headers.get("X-Company-Id"),
+                            ),
                             HTTPStatus.CREATED,
                         )
                     document_id = self._document_action_id(parsed.path, "post")

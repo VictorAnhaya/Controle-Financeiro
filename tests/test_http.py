@@ -52,6 +52,10 @@ class HttpApplicationTests(unittest.TestCase):
         )
         with self.opener.open(setup_request) as response:
             self.assertEqual(response.status, 201)
+        with self.opener.open(f"{self.base_url}/api/meta") as response:
+            metadata = json.load(response)
+        companies = {item["slug"]: item["id"] for item in metadata["companies"]}
+        self.bolotti_id = companies["bolotti-reis"]
 
     def tearDown(self) -> None:
         self.server.shutdown()
@@ -82,6 +86,7 @@ class HttpApplicationTests(unittest.TestCase):
                 "transaction_date": "2026-08-20",
                 "status": "paid",
                 "category": "Tecnologia e sistemas",
+                "company_id": self.bolotti_id,
             }
         ).encode("utf-8")
         request = Request(
@@ -151,7 +156,11 @@ class HttpApplicationTests(unittest.TestCase):
             f"{self.base_url}/api/documents/analyze",
             data=xml,
             method="POST",
-            headers={"Content-Type": "application/xml", "X-Filename": "nota-123.xml"},
+            headers={
+                "Content-Type": "application/xml",
+                "X-Filename": "nota-123.xml",
+                "X-Company-Id": str(self.bolotti_id),
+            },
         )
         with self.opener.open(analyze_request) as response:
             document = json.load(response)

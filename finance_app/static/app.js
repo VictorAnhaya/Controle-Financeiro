@@ -1,16 +1,18 @@
 const state = {
-  view: "dashboard",
+  view: "consolidated",
+  company: "all",
   user: null,
   users: [],
   clients: [],
   goals: null,
   month: "",
-  metadata: { categories: [], cost_centers: [], clients: [] },
+  metadata: { categories: [], cost_centers: [], clients: [], companies: [] },
   transactions: [],
   documents: [],
   ranking: null,
   reviewDocument: null,
   dashboard: null,
+  consolidated: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -21,6 +23,9 @@ const statusLabel = { paid: "Pago/recebido", pending: "Pendente", overdue: "Venc
 const colors = ["#2f6fed", "#7657d6", "#d68a18", "#d94d5c", "#4f84c4", "#9a62b4", "#b56a43", "#52657e"];
 
 function formatMoney(cents = 0) { return money.format(Number(cents) / 100); }
+function companyName(companyId) {
+  return (state.metadata.companies || []).find(item => item.id === Number(companyId))?.name || "Não definida";
+}
 function formatDate(value) {
   if (!value) return "—";
   const [year, month, day] = value.split("-");
@@ -151,6 +156,10 @@ function populateDataLists() {
   const selectedClient = clientSelect.value;
   clientSelect.innerHTML = `<option value="">Informar manualmente</option>${(state.metadata.clients || []).map(item => `<option value="${item.id}">${escapeHtml(item.name)}${item.tax_id ? ` · ${escapeHtml(formatTaxId(item.tax_id))}` : ""}</option>`).join("")}`;
   clientSelect.value = selectedClient;
+  const companyOptions = (state.metadata.companies || []).map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("");
+  $("#companyPicker").innerHTML = `<option value="all">Consolidado</option>${companyOptions}`;
+  $("#companyPicker").value = state.company;
+  $("#transactionCompany").innerHTML = `<option value="">Selecione</option>${companyOptions}`;
 }
 
 function wireEvents() {
@@ -158,6 +167,11 @@ function wireEvents() {
   $$('[data-go]').forEach(button => button.addEventListener("click", () => switchView(button.dataset.go)));
   $("#menuButton").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
   $("#monthPicker").addEventListener("change", async event => { state.month = event.target.value; await loadCurrentView(); });
+  $("#companyPicker").addEventListener("change", async event => {
+    state.company = event.target.value;
+    if (state.view === "consolidated" && state.company !== "all") return switchView("dashboard");
+    await loadCurrentView();
+  });
   $("#newTransactionButton").addEventListener("click", () => openTransactionDialog());
   $("#transactionForm").addEventListener("submit", saveTransaction);
   $$('#transactionForm input[name="kind"]').forEach(input => input.addEventListener("change", updateTransactionClientVisibility));
@@ -188,6 +202,7 @@ function wireEvents() {
   ["#kindFilter", "#statusFilter", "#categoryFilter"].forEach(selector => $(selector).addEventListener("change", loadTransactions));
   $("#searchFilter").addEventListener("input", debounce(loadTransactions, 300));
   window.addEventListener("resize", debounce(() => {
+    if (state.view === "consolidated" && state.consolidated) drawCompanyChart(state.consolidated.items);
     if (state.view === "dashboard" && state.dashboard) renderCharts(state.dashboard);
     if (state.view === "goals" && state.goals) drawGoalsChart(state.goals.history);
   }, 180));
@@ -195,8 +210,12 @@ function wireEvents() {
 
 function switchView(view) {
   if (view === "users" && state.user?.role !== "admin") return;
+  if (view === "consolidated") {
+    state.company = "all";
+    $("#companyPicker").value = "all";
+  }
   state.view = view;
-  const titles = { dashboard: "Visão geral", transactions: "Lançamentos", clients: "Clientes", documents: "Notas fiscais", ranking: "Ranking de clientes", budgets: "Orçamentos", goals: "Metas e projeções", reports: "Relatórios", users: "Usuários" };
+  const titles = { consolidated: "Consolidado", dashboard: "Visão geral", transactions: "Lançamentos", clients: "Clientes", documents: "Notas fiscais", ranking: "Ranking de clientes", budgets: "Orçamentos", goals: "Metas e projeções", reports: "Relatórios", users: "Usuários" };
   $("#pageTitle").textContent = titles[view];
   $$(".view").forEach(element => element.classList.remove("active"));
   $(`#${view}View`).classList.add("active");
@@ -206,6 +225,7 @@ function switchView(view) {
 }
 
 async function loadCurrentView() {
+  if (state.view === "consolidated") return loadConsolidated();
   if (state.view === "dashboard") return loadDashboard();
   if (state.view === "transactions") return loadTransactions();
   if (state.view === "clients") return loadClients();
@@ -217,8 +237,60 @@ async function loadCurrentView() {
   if (state.view === "users") return loadUsers();
 }
 
+async function loadConsolidated() {
+  const data = await api(`/api/consolidated?month=${state.month}`);
+  state.consolidated = data;
+  $("#consolidatedRevenue").textContent = formatMoney(data.totals.revenue_cents);
+  $("#consolidatedInvoiceCount").textContent = `${integer.format(data.totals.invoice_count)} notas ativas`;
+  $("#consolidatedCancelled").textContent = formatMoney(data.totals.cancelled_cents);
+  $("#consolidatedCancelledCount").textContent = `${integer.format(data.totals.cancelled_count)} canceladas`;
+  $("#consolidatedClients").textContent = integer.format(data.totals.client_count);
+  $("#unassignedTransactions").textContent = integer.format(data.totals.unassigned_count);
+  $("#companyComparisonCards").innerHTML = data.items.map(item => {
+    const gross = item.revenue_cents + item.cancelled_cents;
+    const cancellation = gross ? item.cancelled_cents / gross * 100 : 0;
+    return `<article class="company-card">
+      <header><div><span>Empresa</span><h3>${escapeHtml(item.name)}</h3><small>${escapeHtml(item.municipality || "")}</small></div><strong>${item.share_percent.toFixed(1).replace(".", ",")}%</strong></header>
+      <div class="company-card-metrics"><div><span>Receita</span><strong>${formatMoney(item.revenue_cents)}</strong></div><div><span>Notas</span><strong>${integer.format(item.invoice_count)}</strong></div><div><span>Clientes</span><strong>${integer.format(item.client_count)}</strong></div><div><span>Cancelamento</span><strong>${cancellation.toFixed(1).replace(".", ",")}%</strong></div></div>
+      <button class="button secondary full" data-open-company="${item.id}">Ver somente ${escapeHtml(item.name)}</button>
+    </article>`;
+  }).join("");
+  $$('[data-open-company]').forEach(button => button.addEventListener("click", () => {
+    state.company = button.dataset.openCompany;
+    $("#companyPicker").value = state.company;
+    switchView("dashboard");
+  }));
+  requestAnimationFrame(() => drawCompanyChart(data.items));
+}
+
+function drawCompanyChart(items) {
+  const canvas = $("#companyChart");
+  const { context, width, height } = prepareCanvas(canvas, 260);
+  context.clearRect(0, 0, width, height);
+  const padding = { top: 20, right: 16, bottom: 44, left: 58 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maximum = Math.max(...items.flatMap(item => [item.revenue_cents, item.cancelled_cents]), 1);
+  context.font = "10px Inter, sans-serif";
+  for (let step = 0; step <= 4; step++) {
+    const y = padding.top + plotHeight / 4 * step;
+    context.strokeStyle = "#edf0f4"; context.beginPath(); context.moveTo(padding.left, y); context.lineTo(width - padding.right, y); context.stroke();
+    context.fillStyle = "#8993a4"; context.textAlign = "right"; context.fillText(`${Math.round((maximum - maximum / 4 * step) / 100000)}k`, padding.left - 8, y + 3);
+  }
+  const group = plotWidth / Math.max(items.length, 1);
+  items.forEach((item, index) => {
+    const center = padding.left + group * index + group / 2;
+    const barWidth = Math.min(42, group * .22);
+    [[item.revenue_cents, "#2f6fed", -barWidth - 4], [item.cancelled_cents, "#d94d5c", 4]].forEach(([value, color, offset]) => {
+      const barHeight = value / maximum * plotHeight;
+      context.fillStyle = color; context.beginPath(); context.roundRect(center + offset, padding.top + plotHeight - barHeight, barWidth, barHeight, 4); context.fill();
+    });
+    context.fillStyle = "#52657e"; context.textAlign = "center"; context.fillText(item.name, center, height - 16);
+  });
+}
+
 async function loadDashboard() {
-  const data = await api(`/api/dashboard?month=${state.month}`);
+  const data = await api(`/api/dashboard?${queryString({ month: state.month, company: state.company })}`);
   state.dashboard = data;
   const totals = data.totals;
   $("#incomeMetric").textContent = formatMoney(totals.income_cents);
@@ -328,7 +400,7 @@ function drawCategoryChart(canvas, rows) {
 }
 
 function transactionFilters() {
-  return { month: state.month, kind: $("#kindFilter").value, status: $("#statusFilter").value, category: $("#categoryFilter").value, search: $("#searchFilter").value.trim() };
+  return { month: state.month, company: state.company, kind: $("#kindFilter").value, status: $("#statusFilter").value, category: $("#categoryFilter").value, search: $("#searchFilter").value.trim() };
 }
 
 async function loadTransactions() {
@@ -337,12 +409,13 @@ async function loadTransactions() {
   $("#transactionsTable").innerHTML = rows.length ? rows.map(row => `
     <tr>
       <td>${formatDate(row.transaction_date)}</td>
+      <td><span class="company-chip">${escapeHtml(companyName(row.company_id))}</span></td>
       <td class="transaction-name"><strong>${escapeHtml(row.description)}</strong><small>${escapeHtml(row.counterparty || row.cost_center || "Sem favorecido")}</small></td>
       <td>${escapeHtml(row.category)}</td>
       <td><span class="badge ${row.status}">${statusLabel[row.status]}</span></td>
       <td class="align-right"><strong class="amount-${row.kind}">${row.kind === "expense" ? "−" : "+"} ${formatMoney(row.amount_cents)}</strong></td>
       <td><div class="row-actions"><button data-edit="${row.id}">Editar</button><button class="delete" data-delete="${row.id}">Excluir</button></div></td>
-    </tr>`).join("") : `<tr><td colspan="6" class="empty-state">Nenhum lançamento encontrado.</td></tr>`;
+    </tr>`).join("") : `<tr><td colspan="7" class="empty-state">Nenhum lançamento encontrado.</td></tr>`;
   $("#transactionsCount").textContent = `${integer.format(rows.length)} lançamento${rows.length === 1 ? "" : "s"}`;
   const net = rows.reduce((sum, row) => sum + (row.kind === "income" ? row.amount_cents : -row.amount_cents), 0);
   $("#transactionsTotal").textContent = `Saldo listado: ${formatMoney(net)}`;
@@ -362,6 +435,7 @@ function openTransactionDialog(id = null) {
   form.elements.transaction_date.value = new Date().toISOString().slice(0, 10);
   form.elements.status.value = "paid";
   form.elements.kind.value = "expense";
+  form.elements.company_id.value = state.company === "all" ? "" : state.company;
   $("#dialogTitle").textContent = id ? "Editar lançamento" : "Novo lançamento";
   if (id) {
     const row = state.transactions.find(item => item.id === id);
@@ -409,7 +483,7 @@ async function deleteTransaction(id) {
 }
 
 async function loadClients() {
-  const params = queryString({ month: state.month, search: $("#clientSearch").value.trim(), status: $("#clientStatusFilter").value });
+  const params = queryString({ month: state.month, company: state.company, search: $("#clientSearch").value.trim(), status: $("#clientStatusFilter").value });
   const data = await api(`/api/clients?${params}`);
   state.clients = data.items;
   $("#activeClientsMetric").textContent = integer.format(data.summary.active_count);
@@ -459,7 +533,7 @@ async function saveClient(event) {
 }
 
 async function loadGoals() {
-  const data = await api(`/api/goals?month=${state.month}`);
+  const data = await api(`/api/goals?${queryString({ month: state.month, company: state.company })}`);
   state.goals = data;
   const form = $("#goalForm");
   const goal = data.goal;
@@ -481,6 +555,10 @@ async function loadGoals() {
   ];
   $("#goalProgressList").innerHTML = entries.map(([label, actual, target, percent, color], index) => `
     <div class="goal-progress-item"><div><strong>${label}</strong><span>${index < 2 ? `${formatMoney(actual)} de ${target ? formatMoney(target) : "meta não definida"}` : `${integer.format(actual)} de ${target || "meta não definida"}`}</span></div><div class="progress"><i class="${color}" style="width:${Math.min(percent, 100)}%"></i></div><b>${percent}%</b></div>`).join("");
+  $("#goalScenariosTable").innerHTML = data.scenarios.map(item => `
+    <tr><td><strong>${escapeHtml(item.label)}</strong></td><td>${formatMoney(item.monthly_revenue_cents)}</td><td>${formatMoney(item.annual_revenue_cents)}</td><td>${integer.format(item.notes_month)}</td><td>${integer.format(item.notes_year)}</td><td>${formatMoney(item.average_ticket_cents)}</td></tr>`).join("");
+  $("#goalForecastTable").innerHTML = data.forecast_months.map(item => `
+    <tr><td><strong>${escapeHtml(item.label)}</strong></td><td>${integer.format(item.estimated_notes)}</td><td>${escapeHtml(item.seasonality)}</td><td>${item.factor.toFixed(2).replace(".", ",")}</td><td>${formatMoney(item.revenue_cents)}</td><td>${formatMoney(item.accumulated_cents)}</td></tr>`).join("");
   requestAnimationFrame(() => drawGoalsChart(data.history));
 }
 
@@ -488,6 +566,7 @@ async function saveGoal(event) {
   event.preventDefault();
   const payload = Object.fromEntries(new FormData(event.currentTarget));
   payload.month = state.month;
+  payload.company = state.company;
   try {
     state.goals = await api("/api/goals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     toast("Metas salvas para o período."); await loadGoals();
@@ -519,7 +598,7 @@ function drawGoalsChart(rows) {
 }
 
 async function loadBudgets() {
-  const rows = await api(`/api/budgets?month=${state.month}`);
+  const rows = await api(`/api/budgets?${queryString({ month: state.month, company: state.company })}`);
   $("#budgetCards").innerHTML = rows.length ? rows.map(row => {
     const usage = row.limit_cents ? Math.round(row.used_cents / row.limit_cents * 100) : 0;
     const level = usage > 100 ? "danger" : usage >= 80 ? "warning" : "";
@@ -528,19 +607,20 @@ async function loadBudgets() {
 }
 
 async function loadDocuments() {
-  const documents = await api("/api/documents");
+  const documents = await api(`/api/documents?${queryString({ company: state.company })}`);
   state.documents = documents;
   $("#documentCount").textContent = `${integer.format(documents.length)} documento${documents.length === 1 ? "" : "s"}`;
   const documentStatus = { analyzed: "Analisado", needs_review: "Revisar", linked: "Vinculado" };
   $("#documentsTable").innerHTML = documents.length ? documents.map(document => `
     <tr>
+      <td><span class="company-chip">${escapeHtml(companyName(document.company_id))}</span></td>
       <td class="document-file"><strong>${escapeHtml(document.file_name)}</strong><small>${escapeHtml(document.document_type)}${document.document_number ? ` · Nº ${escapeHtml(document.document_number)}` : ""}</small></td>
       <td>${escapeHtml(document.issuer_name || "Não identificado")}</td>
       <td>${formatDate(document.issue_date)}</td>
       <td><span class="badge ${document.extraction_status}">${documentStatus[document.extraction_status]}</span></td>
       <td class="align-right"><strong>${document.total_cents ? formatMoney(document.total_cents) : "—"}</strong></td>
       <td><div class="document-actions"><a href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Abrir</a>${document.transaction_id ? "" : `<button data-review-document="${document.id}">Conferir</button>`}</div></td>
-    </tr>`).join("") : `<tr><td colspan="6" class="empty-state">Nenhum documento anexado.</td></tr>`;
+    </tr>`).join("") : `<tr><td colspan="7" class="empty-state">Nenhum documento anexado.</td></tr>`;
   $$('[data-review-document]').forEach(button => button.addEventListener("click", () => {
     const document = state.documents.find(item => item.id === Number(button.dataset.reviewDocument));
     if (document) openDocumentReview(document);
@@ -549,12 +629,13 @@ async function loadDocuments() {
 
 async function analyzeDocument(file) {
   if (!file) return;
+  if (state.company === "all") { toast("Selecione Bolotti Reis ou WBK antes de anexar a nota.", "error"); $("#documentInput").value = ""; return; }
   if (file.size > 15 * 1024 * 1024) { toast("O arquivo excede o limite de 15 MB.", "error"); return; }
   toast("Lendo e conferindo a nota fiscal...");
   try {
     const document = await api("/api/documents/analyze", {
       method: "POST",
-      headers: { "Content-Type": file.type || "application/octet-stream", "X-Filename": encodeURIComponent(file.name) },
+      headers: { "Content-Type": file.type || "application/octet-stream", "X-Filename": encodeURIComponent(file.name), "X-Company-Id": state.company },
       body: await file.arrayBuffer(),
     });
     state.documents.unshift(document);
@@ -586,6 +667,7 @@ function openDocumentReview(document) {
   applyReviewParty();
   $("#reviewFileName").textContent = document.file_name;
   $("#documentTypeLabel").textContent = document.document_type;
+  $("#reviewCompanyName").textContent = companyName(document.company_id);
   $("#reviewDocumentLink").href = `/api/documents/${document.id}/file`;
   $("#issuerSummary").textContent = document.issuer_name || "Não identificado";
   $("#issuerTaxSummary").textContent = formatTaxId(document.issuer_tax_id);
@@ -641,7 +723,7 @@ async function saveDocumentTransaction(event) {
 
 async function loadRanking() {
   const scope = $("#rankingScope").value;
-  const data = await api(`/api/ranking?${queryString({ month: state.month, scope })}`);
+  const data = await api(`/api/ranking?${queryString({ month: state.month, scope, company: state.company })}`);
   state.ranking = data;
   const summary = data.summary;
   $("#rankingRevenue").textContent = formatMoney(summary.total_cents);
@@ -689,13 +771,13 @@ function renderRankingTable(data) {
 
 async function saveBudget(event) {
   event.preventDefault();
-  const payload = Object.fromEntries(new FormData(event.currentTarget)); payload.month = state.month;
+  const payload = Object.fromEntries(new FormData(event.currentTarget)); payload.month = state.month; payload.company = state.company;
   try { await api("/api/budgets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); event.currentTarget.reset(); toast("Orçamento salvo."); await loadBudgets(); }
   catch (error) { toast(error.message, "error"); }
 }
 
 async function loadReports() {
-  const data = await api(`/api/dashboard?month=${state.month}`);
+  const data = await api(`/api/dashboard?${queryString({ month: state.month, company: state.company })}`);
   const totals = data.totals;
   const margin = totals.income_cents ? totals.balance_cents / totals.income_cents * 100 : 0;
   const ticket = totals.income_count ? totals.income_cents / totals.income_count : 0;
@@ -713,12 +795,14 @@ async function loadReports() {
     <div class="insight"><span>Maior grupo de despesas</span><strong>${escapeHtml(mainCategory?.category || "Sem despesas")}</strong><small>${mainCategory ? formatMoney(mainCategory.amount_cents) : "Cadastre os gastos do período."}</small></div>`;
 }
 
-function exportReport() { window.location.href = `/api/reports/export.csv?${queryString({ month: state.month })}`; }
+function exportReport() { window.location.href = `/api/reports/export.csv?${queryString({ month: state.month, company: state.company })}`; }
 
 async function importWorkbook(event) {
   const file = event.target.files[0]; if (!file) return;
   try {
-    const result = await api("/api/import/nfse", { method: "POST", headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "X-Filename": file.name }, body: await file.arrayBuffer() });
+    const headers = { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "X-Filename": file.name };
+    if (state.company !== "all") headers["X-Company-Id"] = state.company;
+    const result = await api("/api/import/nfse", { method: "POST", headers, body: await file.arrayBuffer() });
     toast(`${result.inserted} registros importados; ${result.ignored} já existentes.`);
     state.metadata = await api("/api/meta"); populateDataLists(); await loadCurrentView();
   } catch (error) { toast(error.message, "error"); }

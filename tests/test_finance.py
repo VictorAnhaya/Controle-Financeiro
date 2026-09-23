@@ -26,6 +26,9 @@ class FinanceServiceTests(unittest.TestCase):
         database.migrate()
         self.repository = FinanceRepository(database)
         self.service = FinanceService(self.repository, Path(self.temporary_directory.name) / "documents")
+        companies = {item["slug"]: item["id"] for item in self.repository.list_companies()}
+        self.bolotti_id = companies["bolotti-reis"]
+        self.wbk_id = companies["wbk"]
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
@@ -42,6 +45,62 @@ class FinanceServiceTests(unittest.TestCase):
         self.assertEqual(dashboard["totals"]["income_count"], 25)
         self.assertEqual(len(self.service.list_transactions({"month": "2026-08"})), 29)
 
+    def test_companies_match_workbook_and_consolidated_totals(self) -> None:
+        self.service.seed_initial_data(PROJECT_ROOT / "data" / "initial_transactions.json")
+
+        consolidated = self.service.company_comparison("2026-08")
+        by_slug = {item["slug"]: item for item in consolidated["items"]}
+
+        self.assertEqual(by_slug["bolotti-reis"]["revenue_cents"], 12_366_537)
+        self.assertEqual(by_slug["bolotti-reis"]["invoice_count"], 14)
+        self.assertEqual(by_slug["wbk"]["revenue_cents"], 10_687_176)
+        self.assertEqual(by_slug["wbk"]["invoice_count"], 11)
+        self.assertEqual(by_slug["wbk"]["cancelled_cents"], 4_869_237)
+        self.assertEqual(consolidated["totals"]["revenue_cents"], 23_053_713)
+        self.assertEqual(consolidated["totals"]["invoice_count"], 25)
+        self.assertEqual(consolidated["totals"]["unassigned_count"], 0)
+
+        bolotti = self.service.dashboard("2026-08", self.bolotti_id)
+        wbk = self.service.dashboard("2026-08", self.wbk_id)
+        self.assertEqual(bolotti["totals"]["income_cents"], 12_366_537)
+        self.assertEqual(wbk["totals"]["income_cents"], 10_687_176)
+
+    def test_goals_are_independent_per_company(self) -> None:
+        self.service.seed_initial_data(PROJECT_ROOT / "data" / "initial_transactions.json")
+        bolotti = self.service.upsert_goal(
+            {
+                "company": self.bolotti_id,
+                "month": "2026-08",
+                "revenue_target": "150.000,00",
+                "expense_limit": "10.000,00",
+                "new_clients_target": 12,
+            }
+        )
+        wbk = self.service.upsert_goal(
+            {
+                "company": self.wbk_id,
+                "month": "2026-08",
+                "revenue_target": "120.000,00",
+                "expense_limit": "8.000,00",
+                "new_clients_target": 10,
+            }
+        )
+
+        self.assertEqual(bolotti["actual"]["revenue_cents"], 12_366_537)
+        self.assertEqual(wbk["actual"]["revenue_cents"], 10_687_176)
+        self.assertEqual(
+            self.service.get_goal_projection("2026-08", self.bolotti_id)["goal"][
+                "revenue_target_cents"
+            ],
+            15_000_000,
+        )
+        self.assertEqual(
+            self.service.get_goal_projection("2026-08", self.wbk_id)["goal"][
+                "revenue_target_cents"
+            ],
+            12_000_000,
+        )
+
     def test_expense_and_budget_update_dashboard(self) -> None:
         created = self.service.create_transaction(
             {
@@ -53,6 +112,7 @@ class FinanceServiceTests(unittest.TestCase):
                 "status": "paid",
                 "category": "Tecnologia e sistemas",
                 "cost_center": "TI",
+                "company_id": self.bolotti_id,
             }
         )
         self.assertEqual(created["amount_cents"], 125_050)
@@ -101,6 +161,7 @@ class FinanceServiceTests(unittest.TestCase):
                 "category": "Honorários e serviços",
                 "counterparty": "G&M PALLETS LTDA",
                 "counterparty_tax_id": "51.356.054/0001-25",
+                "company_id": self.wbk_id,
             }
         )
         updated = self.service.client_ranking("2026-08")
@@ -120,6 +181,7 @@ class FinanceServiceTests(unittest.TestCase):
                 "category": "Honorários e serviços",
                 "counterparty": "G&M PALLETS LTDA",
                 "counterparty_tax_id": "51.356.054/0001-25",
+                "company_id": self.wbk_id,
             }
         )
         after_cancelled = self.service.client_ranking("2026-08")
@@ -153,6 +215,7 @@ class FinanceServiceTests(unittest.TestCase):
                 "status": "paid",
                 "category": "Honorários e serviços",
                 "client_id": client["id"],
+                "company_id": self.bolotti_id,
             }
         )
         self.assertEqual(income["client_id"], client["id"])
@@ -171,6 +234,7 @@ class FinanceServiceTests(unittest.TestCase):
                     "status": "paid",
                     "category": "Honorários e serviços",
                     "client_id": client["id"],
+                    "company_id": self.bolotti_id,
                 }
             )
 
@@ -233,7 +297,9 @@ class FinanceServiceTests(unittest.TestCase):
     def test_xml_document_is_extracted_linked_and_deduplicated(self) -> None:
         xml_path = PROJECT_ROOT / "tests" / "fixtures" / "nfe_sample.xml"
         content = xml_path.read_bytes()
-        document = self.service.analyze_document("nota-123.xml", "application/xml", content)
+        document = self.service.analyze_document(
+            "nota-123.xml", "application/xml", content, self.bolotti_id
+        )
 
         self.assertEqual(document["document_type"], "NF-e")
         self.assertEqual(document["issuer_name"], "FORNECEDOR EXEMPLO LTDA")
@@ -261,7 +327,7 @@ class FinanceServiceTests(unittest.TestCase):
         self.assertEqual(linked["document"]["extraction_status"], "linked")
 
         with self.assertRaises(DuplicateDocumentError):
-            self.service.analyze_document("copia.xml", "application/xml", content)
+            self.service.analyze_document("copia.xml", "application/xml", content, self.bolotti_id)
 
         self.assertTrue(self.service.delete_transaction(linked["transaction"]["id"]))
         unlinked_document = self.repository.get_document(document["id"])
@@ -284,7 +350,9 @@ class FinanceServiceTests(unittest.TestCase):
 
     def test_unsupported_document_is_rejected(self) -> None:
         with self.assertRaises(DocumentReadError):
-            self.service.analyze_document("arquivo.txt", "text/plain", b"conteudo qualquer")
+            self.service.analyze_document(
+                "arquivo.txt", "text/plain", b"conteudo qualquer", self.bolotti_id
+            )
 
     @unittest.skipUnless(PDF_TEST_AVAILABLE, "Dependências de PDF não disponíveis")
     def test_text_pdf_extracts_main_fields(self) -> None:
@@ -306,7 +374,7 @@ class FinanceServiceTests(unittest.TestCase):
         canvas.save()
 
         document = self.service.analyze_document(
-            "nota-456.pdf", "application/pdf", output.getvalue()
+            "nota-456.pdf", "application/pdf", output.getvalue(), self.bolotti_id
         )
         self.assertEqual(document["document_type"], "NFS-e")
         self.assertEqual(document["issuer_name"], "FORNECEDOR PDF LTDA")

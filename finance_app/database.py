@@ -32,6 +32,16 @@ class Database:
                 """
                 PRAGMA journal_mode = WAL;
 
+                CREATE TABLE IF NOT EXISTS companies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    slug TEXT NOT NULL UNIQUE,
+                    municipality TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
+
                 CREATE TABLE IF NOT EXISTS clients (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
@@ -57,6 +67,7 @@ class Database:
                     status TEXT NOT NULL CHECK (status IN ('paid', 'pending', 'overdue', 'cancelled')),
                     category TEXT NOT NULL,
                     cost_center TEXT,
+                    company_id INTEGER,
                     client_id INTEGER,
                     counterparty TEXT,
                     counterparty_tax_id TEXT,
@@ -66,7 +77,8 @@ class Database:
                     external_key TEXT UNIQUE,
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL
+                    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL,
+                    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE RESTRICT
                 );
 
                 CREATE TABLE IF NOT EXISTS budgets (
@@ -90,6 +102,34 @@ class Database:
                     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                 );
 
+                CREATE TABLE IF NOT EXISTS company_goals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope_key TEXT NOT NULL,
+                    company_id INTEGER,
+                    month TEXT NOT NULL,
+                    revenue_target_cents INTEGER NOT NULL CHECK (revenue_target_cents > 0),
+                    expense_limit_cents INTEGER NOT NULL CHECK (expense_limit_cents > 0),
+                    new_clients_target INTEGER NOT NULL DEFAULT 0 CHECK (new_clients_target >= 0),
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    UNIQUE(scope_key, month),
+                    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS company_budgets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope_key TEXT NOT NULL,
+                    company_id INTEGER,
+                    month TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    limit_cents INTEGER NOT NULL CHECK (limit_cents > 0),
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    UNIQUE(scope_key, month, category),
+                    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS fiscal_documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     file_name TEXT NOT NULL,
@@ -109,10 +149,12 @@ class Database:
                     extraction_status TEXT NOT NULL CHECK (extraction_status IN ('analyzed', 'needs_review', 'linked')),
                     confidence REAL NOT NULL DEFAULT 0,
                     extracted_json TEXT NOT NULL,
+                    company_id INTEGER,
                     transaction_id INTEGER UNIQUE,
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                    FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL
+                    FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL,
+                    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE RESTRICT
                 );
 
                 CREATE TABLE IF NOT EXISTS users (
@@ -147,6 +189,10 @@ class Database:
                     ON clients(status);
                 CREATE INDEX IF NOT EXISTS idx_clients_acquisition_date
                     ON clients(acquisition_date);
+                CREATE INDEX IF NOT EXISTS idx_company_goals_scope_month
+                    ON company_goals(scope_key, month);
+                CREATE INDEX IF NOT EXISTS idx_company_budgets_scope_month
+                    ON company_budgets(scope_key, month);
                 CREATE INDEX IF NOT EXISTS idx_fiscal_documents_issue_date
                     ON fiscal_documents(issue_date);
                 CREATE INDEX IF NOT EXISTS idx_fiscal_documents_status
@@ -164,8 +210,78 @@ class Database:
                 "client_id",
                 "INTEGER REFERENCES clients(id) ON DELETE SET NULL",
             )
+            self._ensure_column(
+                connection,
+                "transactions",
+                "company_id",
+                "INTEGER REFERENCES companies(id) ON DELETE RESTRICT",
+            )
+            self._ensure_column(
+                connection,
+                "fiscal_documents",
+                "company_id",
+                "INTEGER REFERENCES companies(id) ON DELETE RESTRICT",
+            )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_transactions_client ON transactions(client_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_transactions_company_date ON transactions(company_id, transaction_date)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documents_company ON fiscal_documents(company_id)"
+            )
+            connection.execute(
+                """
+                INSERT INTO companies (name, slug, municipality)
+                VALUES ('Bolotti Reis', 'bolotti-reis', 'São José dos Pinhais/PR')
+                ON CONFLICT(slug) DO NOTHING
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO companies (name, slug, municipality)
+                VALUES ('WBK', 'wbk', 'Curitiba/PR')
+                ON CONFLICT(slug) DO NOTHING
+                """
+            )
+            connection.execute(
+                """
+                UPDATE transactions
+                   SET company_id = (SELECT id FROM companies WHERE slug = 'bolotti-reis')
+                 WHERE company_id IS NULL
+                   AND (notes LIKE '%São José dos Pinhais%' OR notes LIKE '%Sao Jose dos Pinhais%')
+                """
+            )
+            connection.execute(
+                """
+                UPDATE transactions
+                   SET company_id = (SELECT id FROM companies WHERE slug = 'wbk')
+                 WHERE company_id IS NULL AND notes LIKE '%Curitiba%'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE transactions
+                   SET external_key = 'company:' || company_id || ':' || external_key
+                 WHERE company_id IS NOT NULL AND external_key IS NOT NULL
+                   AND external_key NOT LIKE 'company:%'
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO company_goals
+                    (scope_key, company_id, month, revenue_target_cents, expense_limit_cents, new_clients_target, notes)
+                SELECT 'all', NULL, month, revenue_target_cents, expense_limit_cents, new_clients_target, notes
+                  FROM goals
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO company_budgets
+                    (scope_key, company_id, month, category, limit_cents)
+                SELECT 'all', NULL, month, category, limit_cents FROM budgets
+                """
             )
 
     @staticmethod

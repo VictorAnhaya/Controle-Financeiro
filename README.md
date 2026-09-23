@@ -1,9 +1,14 @@
-# Bolotti Finance — Versão 5
+# Bolotti Finance — Versão 6
 
-Aplicação de controle financeiro criada a partir do relatório de NFS-e do Grupo Bolotti Reis. A base inicial contém as 25 notas ativas de agosto de 2026 (R$ 230.537,13) e as 4 notas canceladas (R$ 48.692,37), conciliadas com a planilha de origem.
+Aplicação de controle financeiro criada a partir do relatório de NFS-e do Grupo Bolotti Reis. A base inicial contém as 25 notas ativas de agosto de 2026 (R$ 230.537,13) e as 4 notas canceladas (R$ 48.692,37), conciliadas com a planilha de origem e separadas entre as empresas Bolotti Reis e WBK.
 
 ## Recursos incluídos
 
+- aba **Consolidado**, somando Bolotti Reis e WBK e comparando faturamento, notas, clientes e cancelamentos;
+- filtro global para visualizar o grupo inteiro, somente Bolotti Reis ou somente WBK;
+- classificação automática da base original: São José dos Pinhais = Bolotti Reis e Curitiba = WBK;
+- empresa obrigatória em novos lançamentos e em cada nota fiscal anexada;
+- metas, orçamentos, clientes, ranking, relatórios e documentos filtrados por empresa;
 - painel mensal com receitas, despesas, saldo e contas a pagar;
 - gráficos de fluxo diário e gastos por categoria;
 - cadastro, edição, busca, filtros e exclusão de lançamentos;
@@ -27,8 +32,10 @@ Aplicação de controle financeiro criada a partir do relatório de NFS-e do Gru
 - migração automática da carteira existente a partir das receitas, sem recadastro manual;
 - vínculo entre cliente e lançamento, com preenchimento automático em novas receitas;
 - acompanhamento de receita mensal e acumulada por cliente;
-- metas mensais de receita, limite de despesas e novos clientes;
-- projeção de fechamento do mês e histórico comparativo dos últimos seis períodos;
+- metas mensais de receita, limite de despesas e novos clientes, independentes por empresa ou consolidadas;
+- projeção de fechamento do mês, histórico comparativo dos últimos seis períodos e cenários anualizados;
+- cenários pessimista (-15%), base, otimista (+15%) e estratégico (+25%);
+- projeção dos próximos seis meses com fatores sazonais da planilha;
 - indicadores de atingimento, valores restantes e resultado financeiro projetado;
 - banco de dados SQLite local e valores armazenados em centavos;
 - interface responsiva para computador, tablet e celular.
@@ -61,6 +68,14 @@ python -m venv .venv
 
 6. Abra `http://127.0.0.1:8080` no navegador.
 7. No primeiro acesso, crie o usuário administrador. Depois, use a aba **Usuários** para cadastrar as demais pessoas.
+
+### Uso das duas empresas
+
+- Selecione **Consolidado** no topo para ver o total do grupo.
+- Selecione **Bolotti Reis** ou **WBK** para filtrar todas as telas pela empresa escolhida.
+- Ao criar um lançamento ou anexar uma nota fiscal individual, informe a empresa responsável.
+- Ao importar a planilha original no modo consolidado, o sistema separa automaticamente as linhas pelo município emissor.
+- As metas e os orçamentos seguem o filtro atual: podem ser cadastrados para o consolidado ou separadamente para cada empresa.
 
 O comando acima instala também os recursos de Excel, PDF e imagem.
 
@@ -119,7 +134,8 @@ O repositório GitHub deste projeto deve ser **privado**, pois a base inicial co
 5. Abra o endereço `onrender.com` criado.
 6. Na tela de primeiro acesso, cadastre o administrador.
 7. Entre na aba **Usuários** para cadastrar os demais acessos sem precisar alterar variáveis no Render.
-8. As abas **Clientes** e **Metas e projeções** ficam disponíveis para os usuários autenticados. Os clientes das receitas já existentes são criados automaticamente na primeira inicialização desta versão.
+8. As abas **Consolidado**, **Clientes** e **Metas e projeções** ficam disponíveis para os usuários autenticados. Os clientes das receitas já existentes são criados automaticamente na primeira inicialização desta versão.
+9. Na primeira abertura da versão 6, os lançamentos existentes são migrados automaticamente para Bolotti Reis ou WBK conforme o município registrado, sem apagar usuários, documentos ou dados anteriores.
 
 O Blueprint usa um serviço pago com disco persistente de 1 GB. Essa configuração é necessária porque o plano gratuito perde o banco SQLite e os documentos anexados quando o serviço reinicia. O Dockerfile também instala o Tesseract em português para manter a leitura OCR de imagens no servidor.
 

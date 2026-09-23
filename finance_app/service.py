@@ -91,6 +91,7 @@ class FinanceService:
     def seed_initial_data(self, seed_path: Path) -> None:
         if seed_path.exists():
             payload = json.loads(seed_path.read_text(encoding="utf-8"))
+            companies = {item["slug"]: item["id"] for item in self.repository.list_companies()}
             rows: list[dict[str, Any]] = []
             for item in payload:
                 row = dict(item)
@@ -105,10 +106,38 @@ class FinanceService:
                             row["amount_cents"],
                             row["status"],
                         )
+                notes = str(row.get("notes") or "")
+                if "São José dos Pinhais" in notes or "Sao Jose dos Pinhais" in notes:
+                    row["company_id"] = companies["bolotti-reis"]
+                elif "Curitiba" in notes:
+                    row["company_id"] = companies["wbk"]
+                if row.get("company_id") and row.get("external_key"):
+                    row["external_key"] = f"company:{row['company_id']}:{row['external_key']}"
                 rows.append(row)
             self.repository.create_transactions_ignoring_duplicates(rows)
         self.repository.backfill_counterparty_tax_ids()
+        self.repository.backfill_companies_by_municipality()
         self.repository.sync_clients_from_income()
+
+    def _resolve_company(self, value: Any, *, required: bool = False) -> int | None:
+        text = str(value or "").strip()
+        if text in {"", "all"}:
+            if required:
+                raise ValidationError(
+                    "Selecione a empresa.", {"company_id": "Escolha Bolotti Reis ou WBK."}
+                )
+            return None
+        try:
+            company_id = int(text)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("Empresa inválida.") from exc
+        if self.repository.get_company(company_id) is None:
+            raise ValidationError("Empresa não encontrada.")
+        return company_id
+
+    @staticmethod
+    def _scope_key(company_id: int | None) -> str:
+        return f"company:{company_id}" if company_id is not None else "all"
 
     def metadata(self) -> dict[str, Any]:
         meta = self.repository.metadata()
@@ -121,6 +150,7 @@ class FinanceService:
         self.repository.refresh_overdue(date.today())
         if filters.get("month"):
             filters["month"] = self._validate_month(filters["month"])
+        filters["company_id"] = self._resolve_company(filters.get("company"))
         return self.repository.list_transactions(filters)
 
     def create_transaction(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -197,6 +227,7 @@ class FinanceService:
             "status": status,
             "category": category,
             "cost_center": self._clean_text(payload.get("cost_center"), max_length=80),
+            "company_id": self._resolve_company(payload.get("company_id"), required=True),
             "client_id": client_id,
             "counterparty": self._clean_text(payload.get("counterparty"), max_length=180),
             "counterparty_tax_id": raw_tax_id or None,
@@ -210,10 +241,12 @@ class FinanceService:
         if status not in {"", "active", "inactive"}:
             raise ValidationError("Status de cliente inválido.")
         search = self._clean_text(filters.get("search"), max_length=120) or ""
+        company_id = self._resolve_company(filters.get("company"))
         return {
-            "items": self.repository.list_clients(month, search, status),
-            "summary": self.repository.client_summary(month),
+            "items": self.repository.list_clients(month, search, status, company_id),
+            "summary": self.repository.client_summary(month, company_id),
             "month": month,
+            "company_id": company_id,
         }
 
     def _validated_client(self, payload: dict[str, Any], current_id: int | None = None) -> dict[str, Any]:
@@ -271,6 +304,7 @@ class FinanceService:
 
     def upsert_goal(self, payload: dict[str, Any]) -> dict[str, Any]:
         month = self._validate_month(payload.get("month"))
+        company_id = self._resolve_company(payload.get("company"))
         try:
             new_clients_target = int(payload.get("new_clients_target", 0))
         except (TypeError, ValueError) as exc:
@@ -279,6 +313,8 @@ class FinanceService:
             raise ValidationError("Confira a meta de clientes.", {"new_clients_target": "Não pode ser negativa."})
         self.repository.upsert_goal(
             {
+                "scope_key": self._scope_key(company_id),
+                "company_id": company_id,
                 "month": month,
                 "revenue_target_cents": self._money_to_cents(payload.get("revenue_target"), "revenue_target"),
                 "expense_limit_cents": self._money_to_cents(payload.get("expense_limit"), "expense_limit"),
@@ -286,19 +322,20 @@ class FinanceService:
                 "notes": self._clean_text(payload.get("notes"), max_length=1000),
             }
         )
-        return self.goal_projection(month)
+        return self.goal_projection(month, company_id)
 
-    def goal_projection(self, month: str) -> dict[str, Any]:
+    def goal_projection(self, month: str, company_id: int | None = None) -> dict[str, Any]:
         resolved = self._validate_month(month)
+        scope_key = self._scope_key(company_id)
         today = date.today()
         current_month = today.strftime("%Y-%m")
-        actual = self.repository.month_actuals(resolved)
-        goal = self.repository.get_goal(resolved)
+        actual = self.repository.month_actuals(resolved, company_id)
+        goal = self.repository.get_goal(resolved, scope_key)
         history: list[dict[str, Any]] = []
         for offset in range(-5, 1):
             history_month = self._month_shift(resolved, offset)
-            values = self.repository.month_actuals(history_month)
-            history.append({"month": history_month, **values, "goal": self.repository.get_goal(history_month)})
+            values = self.repository.month_actuals(history_month, company_id)
+            history.append({"month": history_month, **values, "goal": self.repository.get_goal(history_month, scope_key)})
 
         if resolved < current_month:
             projected_revenue = int(actual["revenue_cents"])
@@ -309,11 +346,62 @@ class FinanceService:
             projected_expense = round(int(actual["expense_cents"]) / today.day * days)
         else:
             prior = [
-                self.repository.month_actuals(self._month_shift(resolved, offset))
+                self.repository.month_actuals(self._month_shift(resolved, offset), company_id)
                 for offset in (-3, -2, -1)
             ]
             projected_revenue = round(sum(int(item["revenue_cents"]) for item in prior) / 3)
             projected_expense = round(sum(int(item["expense_cents"]) for item in prior) / 3)
+
+        base_revenue = int(actual["revenue_cents"])
+        base_notes = int(actual["invoice_count"])
+        average_ticket = round(base_revenue / base_notes) if base_notes else 0
+        scenarios = []
+        for key, label, variation in (
+            ("pessimistic", "Pessimista (-15%)", -0.15),
+            ("base", "Base", 0.0),
+            ("optimistic", "Otimista (+15%)", 0.15),
+            ("strategic", "Meta estratégica (+25%)", 0.25),
+        ):
+            monthly = round(base_revenue * (1 + variation))
+            notes_month = max(round(base_notes * (1 + variation)), 0)
+            scenarios.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "variation_percent": variation * 100,
+                    "monthly_revenue_cents": monthly,
+                    "annual_revenue_cents": monthly * 12,
+                    "notes_month": notes_month,
+                    "notes_year": notes_month * 12,
+                    "average_ticket_cents": round(monthly / notes_month) if notes_month else 0,
+                }
+            )
+
+        month_names = [
+            "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+            "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+        ]
+        seasonal = {1: (0.90, "Baixa (férias)"), 2: (0.95, "Estável"), 10: (1.05, "Alta (pré-fechamento)"), 11: (1.02, "Estável"), 12: (1.10, "Alta (fechamento)")}
+        forecast_months: list[dict[str, Any]] = []
+        accumulated = 0
+        for offset in range(1, 7):
+            forecast_key = self._month_shift(resolved, offset)
+            year, number = map(int, forecast_key.split("-"))
+            factor, seasonal_label = seasonal.get(number, (1.0, "Estável"))
+            estimated_notes = max(round(base_notes * factor), 0)
+            estimated_revenue = round(base_revenue * factor)
+            accumulated += estimated_revenue
+            forecast_months.append(
+                {
+                    "month": forecast_key,
+                    "label": f"{month_names[number - 1]}/{year}",
+                    "estimated_notes": estimated_notes,
+                    "seasonality": seasonal_label,
+                    "factor": factor,
+                    "revenue_cents": estimated_revenue,
+                    "accumulated_cents": accumulated,
+                }
+            )
 
         revenue_target = int(goal["revenue_target_cents"]) if goal else 0
         expense_limit = int(goal["expense_limit_cents"]) if goal else 0
@@ -323,6 +411,8 @@ class FinanceService:
         actual_clients = int(actual["new_clients"])
         return {
             "month": resolved,
+            "company_id": company_id,
+            "scope_key": scope_key,
             "goal": goal,
             "actual": actual,
             "projection": {
@@ -339,12 +429,19 @@ class FinanceService:
                 "clients_remaining": max(client_target - actual_clients, 0),
             },
             "history": history,
+            "scenarios": scenarios,
+            "forecast_months": forecast_months,
+            "average_ticket_cents": average_ticket,
         }
 
-    def dashboard(self, month: str) -> dict[str, Any]:
+    def get_goal_projection(self, month: str, company: Any = None) -> dict[str, Any]:
+        return self.goal_projection(month, self._resolve_company(company))
+
+    def dashboard(self, month: str, company: Any = None) -> dict[str, Any]:
         resolved_month = self._validate_month(month)
+        company_id = self._resolve_company(company)
         self.repository.refresh_overdue(date.today())
-        result = self.repository.dashboard(resolved_month)
+        result = self.repository.dashboard(resolved_month, company_id)
         totals = result["totals"]
         totals["balance_cents"] = int(totals["income_cents"]) - int(totals["expense_cents"])
         budget_limit = int(result["budget_limit_cents"])
@@ -353,14 +450,20 @@ class FinanceService:
         )
         return result
 
-    def list_budgets(self, month: str) -> list[dict[str, Any]]:
-        return self.repository.list_budgets(self._validate_month(month))
+    def list_budgets(self, month: str, company: Any = None) -> list[dict[str, Any]]:
+        company_id = self._resolve_company(company)
+        return self.repository.list_budgets(
+            self._validate_month(month), self._scope_key(company_id), company_id
+        )
 
-    def client_ranking(self, month: str, scope: str = "month") -> dict[str, Any]:
+    def client_ranking(
+        self, month: str, scope: str = "month", company: Any = None
+    ) -> dict[str, Any]:
         if scope not in {"month", "all"}:
             raise ValidationError("Escopo de ranking inválido.")
         resolved_month = self._validate_month(month) if scope == "month" else None
-        rows = self.repository.client_ranking(resolved_month)
+        company_id = self._resolve_company(company)
+        rows = self.repository.client_ranking(resolved_month, company_id)
         total_cents = sum(int(row["total_cents"]) for row in rows)
         items = []
         for position, row in enumerate(rows, start=1):
@@ -374,6 +477,7 @@ class FinanceService:
         return {
             "scope": scope,
             "month": resolved_month,
+            "company_id": company_id,
             "items": items,
             "summary": {
                 "client_count": len(items),
@@ -389,13 +493,43 @@ class FinanceService:
 
     def upsert_budget(self, payload: dict[str, Any]) -> dict[str, Any]:
         month = self._validate_month(payload.get("month"))
+        company_id = self._resolve_company(payload.get("company"))
         category = self._clean_text(payload.get("category"), required=True, max_length=80)
         assert category
         limit_cents = self._money_to_cents(payload.get("limit"), "limit")
-        return self.repository.upsert_budget(month, category, limit_cents)
+        return self.repository.upsert_budget(
+            month, category, limit_cents, self._scope_key(company_id), company_id
+        )
 
-    def import_nfse(self, content: bytes) -> dict[str, Any]:
+    def import_nfse(self, content: bytes, company: Any = None) -> dict[str, Any]:
+        selected_company_id = self._resolve_company(company)
+        company_rows = self.repository.list_companies()
+        companies = {item["slug"]: item["id"] for item in company_rows}
+        company_slugs = {item["id"]: item["slug"] for item in company_rows}
         rows = parse_nfse_workbook(content)
+        company_counts: dict[str, int] = {"bolotti-reis": 0, "wbk": 0}
+        for row in rows:
+            company_id = selected_company_id
+            if company_id is None:
+                notes = str(row.get("notes") or "")
+                if "São José dos Pinhais" in notes or "Sao Jose dos Pinhais" in notes:
+                    company_id = companies["bolotti-reis"]
+                    company_counts["bolotti-reis"] += 1
+                elif "Curitiba" in notes:
+                    company_id = companies["wbk"]
+                    company_counts["wbk"] += 1
+                else:
+                    raise ValidationError(
+                        "Não foi possível identificar a empresa de uma das notas. "
+                        "Selecione Bolotti Reis ou WBK antes de importar."
+                    )
+            else:
+                slug = company_slugs.get(company_id, "")
+                if slug in company_counts:
+                    company_counts[slug] += 1
+            row["company_id"] = company_id
+            if row.get("external_key"):
+                row["external_key"] = f"company:{company_id}:{row['external_key']}"
         inserted, ignored = self.repository.create_transactions_ignoring_duplicates(rows)
         self.repository.sync_clients_from_income()
         active_total = sum(row["amount_cents"] for row in rows if row["status"] == "paid")
@@ -406,16 +540,21 @@ class FinanceService:
             "ignored": ignored,
             "active_total_cents": active_total,
             "cancelled_total_cents": cancelled_total,
+            "company_counts": company_counts,
         }
 
     @staticmethod
     def _public_document(document: dict[str, Any]) -> dict[str, Any]:
         return {key: value for key, value in document.items() if key != "storage_name"}
 
-    def list_documents(self) -> list[dict[str, Any]]:
-        return [self._public_document(item) for item in self.repository.list_documents()]
+    def list_documents(self, company: Any = None) -> list[dict[str, Any]]:
+        company_id = self._resolve_company(company)
+        return [self._public_document(item) for item in self.repository.list_documents(company_id=company_id)]
 
-    def analyze_document(self, file_name: str, mime_type: str, content: bytes) -> dict[str, Any]:
+    def analyze_document(
+        self, file_name: str, mime_type: str, content: bytes, company: Any
+    ) -> dict[str, Any]:
+        company_id = self._resolve_company(company, required=True)
         safe_name = Path(file_name or "documento").name[:180]
         if not content:
             raise ValidationError("O arquivo enviado está vazio.")
@@ -457,6 +596,7 @@ class FinanceService:
                     "extraction_status": status,
                     "confidence": parsed.confidence,
                     "extracted_json": json.dumps(extracted, ensure_ascii=False),
+                    "company_id": company_id,
                 }
             )
         except Exception:
@@ -473,6 +613,7 @@ class FinanceService:
         if document["transaction_id"] is not None:
             raise ValidationError("Este documento já está vinculado a um lançamento.")
         enriched_payload = dict(payload)
+        enriched_payload["company_id"] = document.get("company_id")
         if enriched_payload.get("kind") == "income":
             if not enriched_payload.get("counterparty"):
                 enriched_payload["counterparty"] = document.get("recipient_name") or document.get("issuer_name")
@@ -495,6 +636,9 @@ class FinanceService:
             transaction = self.repository.get_transaction(transaction["id"]) or transaction
         return {"transaction": transaction, "document": self._public_document(updated_document)}
 
+    def company_comparison(self, month: str) -> dict[str, Any]:
+        return self.repository.company_comparison(self._validate_month(month))
+
     def document_file(self, document_id: int) -> tuple[Path, str, str] | None:
         document = self.repository.get_document(document_id)
         if document is None:
@@ -511,6 +655,7 @@ class FinanceService:
         writer = csv.writer(output, delimiter=";")
         writer.writerow(
             [
+                "Empresa",
                 "Data",
                 "Tipo",
                 "Descrição",
@@ -525,9 +670,11 @@ class FinanceService:
                 "Observações",
             ]
         )
+        company_names = {item["id"]: item["name"] for item in self.repository.list_companies()}
         for row in rows:
             writer.writerow(
                 [
+                    company_names.get(row.get("company_id"), "Não definida"),
                     row["transaction_date"],
                     "Receita" if row["kind"] == "income" else "Despesa",
                     row["description"],
