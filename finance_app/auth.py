@@ -213,7 +213,7 @@ class AuthService:
         return [self._public_user(row) for row in rows]
 
     def create_user(self, payload: dict[str, Any]) -> dict[str, Any]:
-        values = self._validated_identity(payload, password_required=True)
+        values = self._validated_identity({**payload, "role": "user"}, password_required=True)
         now = self._timestamp()
         try:
             with self.database.connection() as connection:
@@ -244,14 +244,20 @@ class AuthService:
     ) -> dict[str, Any] | None:
         with self.database.connection() as connection:
             current = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            owner_admin_id = connection.execute(
+                "SELECT MIN(id) FROM users WHERE role = 'admin'"
+            ).fetchone()[0]
         if current is None:
             return None
+        requested_role = str(payload.get("role") or current["role"]).strip().lower()
+        if user_id == owner_admin_id and requested_role != "admin":
+            raise AuthError("Você não pode remover a sua própria permissão de administrador.")
 
         merged = {
             "name": payload.get("name", current["name"]),
             "username": payload.get("username", current["username"]),
             "password": payload.get("password", ""),
-            "role": payload.get("role", current["role"]),
+            "role": "admin" if user_id == owner_admin_id else "user",
         }
         values = self._validated_identity(merged, password_required=False)
         is_active = bool(payload.get("is_active", current["is_active"]))

@@ -271,7 +271,7 @@
         <article class="panel"><div class="panel-header"><div><span class="panel-kicker">Análise gerencial</span><h2>Indicadores do período</h2></div></div><div id="reportInsights" class="insights-grid"></div></article>
       </section>
 
-      <section class="view" id="usersView">
+      <section class="view admin-only" id="usersView" hidden>
         <div class="users-header">
           <div><span class="panel-kicker">Administração</span><h2>Usuários do sistema</h2><p>Cadastre as pessoas que podem acessar o controle financeiro e defina o nível de permissão.</p></div>
           <button class="button primary" id="newUserButton">+ Novo usuário</button>
@@ -352,7 +352,8 @@
       <div class="form-grid">
         <label class="span-2">Nome completo *<input name="name" required maxlength="120"></label>
         <label>Usuário *<input name="username" required minlength="3" maxlength="50" placeholder="Ex.: maria.silva"></label>
-        <label>Permissão *<select name="role" required><option value="user">Usuário comum</option><option value="admin">Administrador</option></select></label>
+        <input type="hidden" name="role" value="user">
+        <label>Permissão<input value="Usuário comum" disabled><small>Somente o administrador inicial acessa este painel.</small></label>
         <label class="span-2">Senha <input type="password" name="password" minlength="8" autocomplete="new-password"><small id="passwordHelp">Mínimo de 8 caracteres.</small></label>
         <label class="user-active-field span-2"><input type="checkbox" name="is_active" checked><span>Usuário ativo e autorizado a entrar</span></label>
       </div>

@@ -71,6 +71,11 @@ class HttpApplicationTests(unittest.TestCase):
         with self.opener.open(f"{self.base_url}/") as response:
             html = response.read().decode("utf-8")
         self.assertIn("Bolotti Finance", html)
+        self.assertIn('class="view admin-only" id="usersView" hidden', html)
+
+        with self.opener.open(f"{self.base_url}/styles.css") as response:
+            css = response.read().decode("utf-8")
+        self.assertIn("[hidden] { display: none !important; }", css)
 
         with self.opener.open(f"{self.base_url}/api/ranking?month=2026-08&scope=month") as response:
             ranking = json.load(response)
@@ -252,7 +257,7 @@ class HttpAuthenticationTests(unittest.TestCase):
                     "name": "Maria Silva",
                     "username": "maria",
                     "password": "outra-senha",
-                    "role": "user",
+                    "role": "admin",
                 }
             ).encode("utf-8"),
             method="POST",
@@ -261,6 +266,7 @@ class HttpAuthenticationTests(unittest.TestCase):
         with self.admin_opener.open(create_user) as response:
             created = json.load(response)
         self.assertEqual(created["username"], "maria")
+        self.assertEqual(created["role"], "user")
 
         update_user = Request(
             f"{self.base_url}/api/users/{created['id']}",

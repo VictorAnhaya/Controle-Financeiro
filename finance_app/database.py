@@ -240,6 +240,14 @@ class Database:
             )
             connection.execute(
                 """
+                UPDATE users
+                   SET role = 'user', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE role = 'admin'
+                   AND id != (SELECT MIN(id) FROM users WHERE role = 'admin')
+                """
+            )
+            connection.execute(
+                """
                 INSERT INTO companies (name, slug, municipality)
                 VALUES ('WBK', 'wbk', 'Curitiba/PR')
                 ON CONFLICT(slug) DO NOTHING

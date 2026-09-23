@@ -86,11 +86,16 @@ function showAuth(setupRequired) {
 
 async function enterApplication(user) {
   state.user = user;
+  state.view = "consolidated";
+  state.company = "all";
   document.body.classList.add("authenticated");
   $("#currentUserName").textContent = user.name;
   $("#currentUserRole").textContent = user.role === "admin" ? "Administrador" : "Usuário comum";
   $("#userAvatar").textContent = user.name.trim().charAt(0).toUpperCase() || "U";
   $$(".admin-only").forEach(element => { element.hidden = user.role !== "admin"; });
+  $("#pageTitle").textContent = "Consolidado";
+  $$(".view").forEach(element => element.classList.toggle("active", element.id === "consolidatedView"));
+  $$(".nav-item").forEach(element => element.classList.toggle("active", element.dataset.view === "consolidated"));
   if (!enterApplication.wired) {
     wireEvents();
     enterApplication.wired = true;

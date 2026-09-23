@@ -13,6 +13,7 @@ Esta versão substitui os arquivos da versão anterior sem exigir a exclusão do
 - cenários pessimista, base, otimista e estratégico;
 - projeção dos próximos seis meses com sazonalidade;
 - migração automática dos dados já cadastrados.
+- painel de usuários restrito ao administrador inicial, inclusive após troca de login no mesmo navegador.
 
 ## Como substituir
 

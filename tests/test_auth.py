@@ -13,6 +13,7 @@ class AuthServiceTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         database = Database(Path(self.temporary_directory.name) / "auth.db")
         database.migrate()
+        self.database = database
         self.auth = AuthService(database)
 
     def tearDown(self) -> None:
@@ -43,9 +44,10 @@ class AuthServiceTests(unittest.TestCase):
                 "name": "Maria Silva",
                 "username": "maria",
                 "password": "senha-inicial",
-                "role": "user",
+                "role": "admin",
             }
         )
+        self.assertEqual(created["role"], "user")
         authenticated, token = self.auth.authenticate("MARIA", "senha-inicial")
         self.assertEqual(authenticated["id"], created["id"])
 
@@ -57,6 +59,26 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(updated["name"], "Maria Souza")
         self.assertFalse(updated["is_active"])
         self.assertIsNone(self.auth.session_user(token))
+
+    def test_migration_keeps_only_initial_administrator(self) -> None:
+        admin, _ = self.auth.setup_admin(
+            {"name": "Administrador", "username": "admin", "password": "senha-segura"}
+        )
+        created = self.auth.create_user(
+            {
+                "name": "Outro usuário",
+                "username": "outro",
+                "password": "senha-inicial",
+                "role": "user",
+            }
+        )
+        with self.database.connection() as connection:
+            connection.execute("UPDATE users SET role = 'admin' WHERE id = ?", (created["id"],))
+
+        self.database.migrate()
+        users = {item["id"]: item for item in self.auth.list_users()}
+        self.assertEqual(users[admin["id"]]["role"], "admin")
+        self.assertEqual(users[created["id"]]["role"], "user")
 
     def test_last_active_admin_cannot_be_removed(self) -> None:
         admin, _ = self.auth.setup_admin(

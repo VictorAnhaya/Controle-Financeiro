@@ -1,4 +1,4 @@
-# Bolotti Finance — Versão 6
+# Bolotti Finance — Versão 6.1
 
 Aplicação de controle financeiro criada a partir do relatório de NFS-e do Grupo Bolotti Reis. A base inicial contém as 25 notas ativas de agosto de 2026 (R$ 230.537,13) e as 4 notas canceladas (R$ 48.692,37), conciliadas com a planilha de origem e separadas entre as empresas Bolotti Reis e WBK.
 
@@ -42,7 +42,8 @@ Aplicação de controle financeiro criada a partir do relatório de NFS-e do Gru
 - tela de login com sessões seguras armazenadas no banco;
 - criação do primeiro administrador no primeiro acesso;
 - aba de usuários exclusiva para administradores;
-- criação, edição, alteração de senha, ativação e desativação de usuários.
+- criação, edição, alteração de senha, ativação e desativação de usuários;
+- somente o administrador inicial possui acesso ao painel de usuários; contas criadas depois são sempre usuários comuns.
 
 ## Como executar no VS Code — Windows 11
 
