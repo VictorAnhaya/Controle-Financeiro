@@ -109,7 +109,7 @@ class FinanceService:
                         )
                 notes = str(row.get("notes") or "")
                 if "São José dos Pinhais" in notes or "Sao Jose dos Pinhais" in notes:
-                    row["company_id"] = companies["bolotti-reis"]
+                    row["company_id"] = companies["brc"]
                 elif "Curitiba" in notes:
                     row["company_id"] = companies["wbk"]
                 if row.get("company_id") and row.get("external_key"):
@@ -551,15 +551,15 @@ class FinanceService:
             if company_id is None:
                 notes = str(row.get("notes") or "")
                 if "São José dos Pinhais" in notes or "Sao Jose dos Pinhais" in notes:
-                    company_id = companies["bolotti-reis"]
-                    company_counts["bolotti-reis"] += 1
+                    company_id = companies["brc"]
+                    company_counts["brc"] += 1
                 elif "Curitiba" in notes:
                     company_id = companies["wbk"]
                     company_counts["wbk"] += 1
                 else:
                     raise ValidationError(
                         "Não foi possível identificar a empresa de uma das notas. "
-                        "Selecione Bolotti Reis ou WBK antes de importar."
+                        "Selecione BRC ou WBK antes de importar."
                     )
             else:
                 slug = company_slugs.get(company_id, "")

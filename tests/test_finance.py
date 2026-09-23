@@ -27,7 +27,7 @@ class FinanceServiceTests(unittest.TestCase):
         self.repository = FinanceRepository(database)
         self.service = FinanceService(self.repository, Path(self.temporary_directory.name) / "documents")
         companies = {item["slug"]: item["id"] for item in self.repository.list_companies()}
-        self.bolotti_id = companies["bolotti-reis"]
+        self.brc_id = companies["brc"]
         self.wbk_id = companies["wbk"]
 
     def tearDown(self) -> None:
@@ -51,8 +51,9 @@ class FinanceServiceTests(unittest.TestCase):
         consolidated = self.service.company_comparison("2026-08")
         by_slug = {item["slug"]: item for item in consolidated["items"]}
 
-        self.assertEqual(by_slug["bolotti-reis"]["revenue_cents"], 12_366_537)
-        self.assertEqual(by_slug["bolotti-reis"]["invoice_count"], 14)
+        self.assertEqual(by_slug["brc"]["name"], "BRC")
+        self.assertEqual(by_slug["brc"]["revenue_cents"], 12_366_537)
+        self.assertEqual(by_slug["brc"]["invoice_count"], 14)
         self.assertEqual(by_slug["wbk"]["revenue_cents"], 10_687_176)
         self.assertEqual(by_slug["wbk"]["invoice_count"], 11)
         self.assertEqual(by_slug["wbk"]["cancelled_cents"], 4_869_237)
@@ -60,9 +61,9 @@ class FinanceServiceTests(unittest.TestCase):
         self.assertEqual(consolidated["totals"]["invoice_count"], 25)
         self.assertEqual(consolidated["totals"]["unassigned_count"], 0)
 
-        bolotti = self.service.dashboard("2026-08", self.bolotti_id)
+        brc = self.service.dashboard("2026-08", self.brc_id)
         wbk = self.service.dashboard("2026-08", self.wbk_id)
-        self.assertEqual(bolotti["totals"]["income_cents"], 12_366_537)
+        self.assertEqual(brc["totals"]["income_cents"], 12_366_537)
         self.assertEqual(wbk["totals"]["income_cents"], 10_687_176)
 
     def test_new_company_is_available_in_consolidated_and_transactions(self) -> None:
@@ -105,9 +106,9 @@ class FinanceServiceTests(unittest.TestCase):
 
     def test_goals_are_independent_per_company(self) -> None:
         self.service.seed_initial_data(PROJECT_ROOT / "data" / "initial_transactions.json")
-        bolotti = self.service.upsert_goal(
+        brc = self.service.upsert_goal(
             {
-                "company": self.bolotti_id,
+                "company": self.brc_id,
                 "month": "2026-08",
                 "revenue_target": "150.000,00",
                 "expense_limit": "10.000,00",
@@ -124,10 +125,10 @@ class FinanceServiceTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(bolotti["actual"]["revenue_cents"], 12_366_537)
+        self.assertEqual(brc["actual"]["revenue_cents"], 12_366_537)
         self.assertEqual(wbk["actual"]["revenue_cents"], 10_687_176)
         self.assertEqual(
-            self.service.get_goal_projection("2026-08", self.bolotti_id)["goal"][
+            self.service.get_goal_projection("2026-08", self.brc_id)["goal"][
                 "revenue_target_cents"
             ],
             15_000_000,
@@ -150,7 +151,7 @@ class FinanceServiceTests(unittest.TestCase):
                 "status": "paid",
                 "category": "Tecnologia e sistemas",
                 "cost_center": "TI",
-                "company_id": self.bolotti_id,
+                "company_id": self.brc_id,
             }
         )
         self.assertEqual(created["amount_cents"], 125_050)
@@ -253,7 +254,7 @@ class FinanceServiceTests(unittest.TestCase):
                 "status": "paid",
                 "category": "Honorários e serviços",
                 "client_id": client["id"],
-                "company_id": self.bolotti_id,
+                "company_id": self.brc_id,
             }
         )
         self.assertEqual(income["client_id"], client["id"])
@@ -272,7 +273,7 @@ class FinanceServiceTests(unittest.TestCase):
                     "status": "paid",
                     "category": "Honorários e serviços",
                     "client_id": client["id"],
-                    "company_id": self.bolotti_id,
+                    "company_id": self.brc_id,
                 }
             )
 
@@ -294,7 +295,7 @@ class FinanceServiceTests(unittest.TestCase):
                 "status": "paid",
                 "category": "Honorários e serviços",
                 "client_id": client["id"],
-                "company_id": self.bolotti_id,
+                "company_id": self.brc_id,
             }
         )
 
@@ -361,11 +362,106 @@ class FinanceServiceTests(unittest.TestCase):
         self.assertEqual(clients["items"][0]["name"], "Cliente antigo")
         self.assertEqual(service.dashboard("2026-08")["totals"]["income_cents"], 10000)
 
+    def test_existing_bolotti_company_is_renamed_to_brc_without_losing_data(self) -> None:
+        migration_path = Path(self.temporary_directory.name) / "company-migration.db"
+        database = Database(migration_path)
+        database.migrate()
+        with database.connection() as connection:
+            brc = connection.execute(
+                "SELECT id FROM companies WHERE slug = 'brc'"
+            ).fetchone()
+            original_id = int(brc["id"])
+            connection.execute(
+                "UPDATE companies SET name = 'Bolotti Reis', slug = 'bolotti-reis' WHERE id = ?",
+                (original_id,),
+            )
+            cursor = connection.execute(
+                """
+                INSERT INTO transactions
+                    (kind, description, amount_cents, transaction_date, status, category, company_id)
+                VALUES ('income', 'Receita preservada', 25000, '2026-08-15', 'paid', 'Serviços', ?)
+                """,
+                (original_id,),
+            )
+            transaction_id = int(cursor.lastrowid)
+
+        database.migrate()
+        repository = FinanceRepository(database)
+        companies = {item["slug"]: item for item in repository.list_companies()}
+        self.assertEqual(set(companies), {"brc", "wbk"})
+        self.assertEqual(companies["brc"]["name"], "BRC")
+        self.assertEqual(companies["brc"]["id"], original_id)
+        self.assertEqual(repository.get_transaction(transaction_id)["company_id"], original_id)
+
+    def test_duplicate_brc_company_is_merged_during_migration(self) -> None:
+        migration_path = Path(self.temporary_directory.name) / "company-merge.db"
+        database = Database(migration_path)
+        database.migrate()
+        with database.connection() as connection:
+            existing = connection.execute(
+                "SELECT id FROM companies WHERE slug = 'brc'"
+            ).fetchone()
+            old_id = int(existing["id"])
+            connection.execute(
+                "UPDATE companies SET name = 'Bolotti Reis', slug = 'bolotti-reis' WHERE id = ?",
+                (old_id,),
+            )
+            cursor = connection.execute(
+                "INSERT INTO companies (name, slug, municipality) VALUES ('BRC', 'brc', 'São José dos Pinhais/PR')"
+            )
+            brc_id = int(cursor.lastrowid)
+            transaction_cursor = connection.execute(
+                """
+                INSERT INTO transactions
+                    (kind, description, amount_cents, transaction_date, status, category,
+                     company_id, external_key)
+                VALUES ('income', 'Receita a migrar', 30000, '2026-08-16', 'paid',
+                        'Serviços', ?, ?)
+                """,
+                (old_id, f"company:{old_id}:nfse:teste"),
+            )
+            transaction_id = int(transaction_cursor.lastrowid)
+            connection.execute(
+                """
+                INSERT INTO company_goals
+                    (scope_key, company_id, month, revenue_target_cents,
+                     expense_limit_cents, new_clients_target)
+                VALUES (?, ?, '2026-09', 100000, 50000, 2)
+                """,
+                (f"company:{old_id}", old_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO company_budgets
+                    (scope_key, company_id, month, category, limit_cents)
+                VALUES (?, ?, '2026-09', 'Tecnologia', 25000)
+                """,
+                (f"company:{old_id}", old_id),
+            )
+
+        database.migrate()
+        repository = FinanceRepository(database)
+        companies = {item["slug"]: item for item in repository.list_companies()}
+        transaction = repository.get_transaction(transaction_id)
+        self.assertEqual(set(companies), {"brc", "wbk"})
+        self.assertEqual(companies["brc"]["id"], brc_id)
+        self.assertEqual(transaction["company_id"], brc_id)
+        self.assertEqual(transaction["external_key"], f"company:{brc_id}:nfse:teste")
+        with database.connection() as connection:
+            goal = connection.execute(
+                "SELECT company_id, scope_key FROM company_goals WHERE month = '2026-09'"
+            ).fetchone()
+            budget = connection.execute(
+                "SELECT company_id, scope_key FROM company_budgets WHERE month = '2026-09'"
+            ).fetchone()
+        self.assertEqual(dict(goal), {"company_id": brc_id, "scope_key": f"company:{brc_id}"})
+        self.assertEqual(dict(budget), {"company_id": brc_id, "scope_key": f"company:{brc_id}"})
+
     def test_xml_document_is_extracted_linked_and_deduplicated(self) -> None:
         xml_path = PROJECT_ROOT / "tests" / "fixtures" / "nfe_sample.xml"
         content = xml_path.read_bytes()
         document = self.service.analyze_document(
-            "nota-123.xml", "application/xml", content, self.bolotti_id
+            "nota-123.xml", "application/xml", content, self.brc_id
         )
 
         self.assertEqual(document["document_type"], "NF-e")
@@ -394,7 +490,7 @@ class FinanceServiceTests(unittest.TestCase):
         self.assertEqual(linked["document"]["extraction_status"], "linked")
 
         with self.assertRaises(DuplicateDocumentError):
-            self.service.analyze_document("copia.xml", "application/xml", content, self.bolotti_id)
+            self.service.analyze_document("copia.xml", "application/xml", content, self.brc_id)
 
         self.assertTrue(self.service.delete_transaction(linked["transaction"]["id"]))
         unlinked_document = self.repository.get_document(document["id"])
@@ -427,7 +523,7 @@ class FinanceServiceTests(unittest.TestCase):
     def test_unsupported_document_is_rejected(self) -> None:
         with self.assertRaises(DocumentReadError):
             self.service.analyze_document(
-                "arquivo.txt", "text/plain", b"conteudo qualquer", self.bolotti_id
+                "arquivo.txt", "text/plain", b"conteudo qualquer", self.brc_id
             )
 
     @unittest.skipUnless(PDF_TEST_AVAILABLE, "Dependências de PDF não disponíveis")
@@ -450,7 +546,7 @@ class FinanceServiceTests(unittest.TestCase):
         canvas.save()
 
         document = self.service.analyze_document(
-            "nota-456.pdf", "application/pdf", output.getvalue(), self.bolotti_id
+            "nota-456.pdf", "application/pdf", output.getvalue(), self.brc_id
         )
         self.assertEqual(document["document_type"], "NFS-e")
         self.assertEqual(document["issuer_name"], "FORNECEDOR PDF LTDA")
@@ -469,6 +565,8 @@ class FinanceServiceTests(unittest.TestCase):
         self.assertEqual(first["inserted"], 29)
         self.assertEqual(first["active_total_cents"], 23_053_713)
         self.assertEqual(first["cancelled_total_cents"], 4_869_237)
+        self.assertEqual(first["company_counts"]["brc"], 14)
+        self.assertEqual(first["company_counts"]["wbk"], 15)
         self.assertEqual(second["inserted"], 0)
         self.assertEqual(second["ignored"], 29)
         self.assertEqual(dashboard["totals"]["income_cents"], 23_053_713)

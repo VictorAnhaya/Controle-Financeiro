@@ -1,14 +1,14 @@
-# Bolotti Finance — Versão 6.4
+# Bolotti Finance — Versão 6.5
 
-Aplicação de controle financeiro criada a partir do relatório de NFS-e do Grupo Bolotti Reis. A base inicial contém as 25 notas ativas de agosto de 2026 (R$ 230.537,13) e as 4 notas canceladas (R$ 48.692,37), conciliadas com a planilha de origem e separadas entre as empresas Bolotti Reis e WBK.
+Aplicação de controle financeiro criada a partir do relatório de NFS-e do grupo. A base inicial contém as 25 notas ativas de agosto de 2026 (R$ 230.537,13) e as 4 notas canceladas (R$ 48.692,37), conciliadas com a planilha de origem e separadas entre as empresas BRC e WBK.
 
 ## Recursos incluídos
 
-- aba **Consolidado**, somando Bolotti Reis e WBK e comparando faturamento, notas, clientes e cancelamentos;
-- filtro global para visualizar o grupo inteiro, somente Bolotti Reis ou somente WBK;
+- aba **Consolidado**, somando BRC e WBK e comparando faturamento, notas, clientes e cancelamentos;
+- filtro global para visualizar o grupo inteiro, somente BRC ou somente WBK;
 - cadastro administrativo de novas empresas, incluídas automaticamente no consolidado e nos filtros;
 - exclusão segura de empresas sem movimentações vinculadas, restrita ao administrador;
-- classificação automática da base original: São José dos Pinhais = Bolotti Reis e Curitiba = WBK;
+- classificação automática da base original: São José dos Pinhais = BRC e Curitiba = WBK;
 - empresa obrigatória em novos lançamentos e em cada nota fiscal anexada;
 - metas, orçamentos, clientes, ranking, relatórios e documentos filtrados por empresa;
 - painel mensal com receitas, despesas, saldo e contas a pagar;
@@ -78,7 +78,7 @@ python -m venv .venv
 ### Uso das duas empresas
 
 - Selecione **Consolidado** no topo para ver o total do grupo.
-- Selecione **Bolotti Reis** ou **WBK** para filtrar todas as telas pela empresa escolhida.
+- Selecione **BRC** ou **WBK** para filtrar todas as telas pela empresa escolhida.
 - Ao criar um lançamento ou anexar uma nota fiscal individual, informe a empresa responsável.
 - Ao importar a planilha original no modo consolidado, o sistema separa automaticamente as linhas pelo município emissor.
 - As metas e os orçamentos seguem o filtro atual: podem ser cadastrados para o consolidado ou separadamente para cada empresa.
@@ -148,7 +148,7 @@ O arquivo `start.sh` desta versão inicia diretamente o `run.py`. O projeto não
 6. Na tela de primeiro acesso, cadastre o administrador.
 7. Entre na aba **Usuários** para cadastrar os demais acessos sem precisar alterar variáveis no Render.
 8. As abas **Consolidado**, **Clientes** e **Metas e projeções** ficam disponíveis para os usuários autenticados. Os clientes das receitas já existentes são criados automaticamente na primeira inicialização desta versão.
-9. Na primeira abertura da versão 6, os lançamentos existentes são migrados automaticamente para Bolotti Reis ou WBK conforme o município registrado, sem apagar usuários, documentos ou dados anteriores.
+9. Na primeira abertura da versão 6.5, a antiga empresa Bolotti Reis é convertida automaticamente em BRC, mantendo lançamentos, documentos, metas e orçamentos. Os demais registros continuam separados entre BRC e WBK conforme o município registrado.
 
 O Blueprint usa um serviço pago com disco persistente de 1 GB. Essa configuração é necessária porque o plano gratuito perde o banco SQLite e os documentos anexados quando o serviço reinicia. O Dockerfile também instala o Tesseract em português para manter a leitura OCR de imagens no servidor.
 

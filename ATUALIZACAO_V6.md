@@ -1,13 +1,13 @@
-# Atualização V6 — Bolotti Reis + WBK
+# Atualização V6.5 — BRC + WBK
 
 Esta versão substitui os arquivos da versão anterior sem exigir a exclusão do banco de dados existente.
 
 ## O que foi incluído
 
-- aba inicial **Consolidado** para Bolotti Reis + WBK;
+- aba inicial **Consolidado** para BRC + WBK;
 - filtro global por empresa em lançamentos, clientes, notas fiscais, ranking, orçamentos, metas e relatórios;
 - empresa obrigatória ao criar um lançamento ou anexar uma nota fiscal;
-- identificação automática da planilha: São José dos Pinhais = Bolotti Reis e Curitiba = WBK;
+- identificação automática da planilha: São José dos Pinhais = BRC e Curitiba = WBK;
 - importação consolidada com separação automática por município;
 - metas e orçamentos independentes para cada empresa e para o consolidado;
 - cenários pessimista, base, otimista e estratégico;
@@ -21,6 +21,7 @@ Esta versão substitui os arquivos da versão anterior sem exigir a exclusão do
 - inicialização no Render corrigida para o comando `bash start.sh`, sem dependência de Flask.
 - exclusão de empresas pela aba administrativa, bloqueada quando há lançamentos, notas, metas ou orçamentos vinculados;
 - exclusão de notas fiscais e do arquivo anexado, sem apagar um lançamento financeiro já criado.
+- substituição automática da antiga empresa Bolotti Reis por BRC, preservando todos os dados vinculados;
 
 ## Como substituir
 
@@ -34,7 +35,7 @@ Na primeira inicialização, o sistema cria as duas empresas e classifica os lan
 
 ## Conferência da planilha de origem
 
-- Bolotti Reis: 14 notas ativas, total de R$ 123.665,37.
+- BRC: 14 notas ativas, total de R$ 123.665,37.
 - WBK: 11 notas ativas, total de R$ 106.871,76.
 - Consolidado: 25 notas ativas, total de R$ 230.537,13.
 - Canceladas: 4 notas, total de R$ 48.692,37, classificadas na WBK conforme o município da planilha.

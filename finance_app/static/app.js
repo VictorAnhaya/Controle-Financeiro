@@ -710,7 +710,7 @@ async function deleteDocument(id) {
 
 async function analyzeDocument(file) {
   if (!file) return;
-  if (state.company === "all") { toast("Selecione Bolotti Reis ou WBK antes de anexar a nota.", "error"); $("#documentInput").value = ""; return; }
+  if (state.company === "all") { toast("Selecione BRC ou WBK antes de anexar a nota.", "error"); $("#documentInput").value = ""; return; }
   if (file.size > 15 * 1024 * 1024) { toast("O arquivo excede o limite de 15 MB.", "error"); return; }
   toast("Lendo e conferindo a nota fiscal...");
   try {

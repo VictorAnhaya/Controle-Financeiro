@@ -55,7 +55,7 @@ class HttpApplicationTests(unittest.TestCase):
         with self.opener.open(f"{self.base_url}/api/meta") as response:
             metadata = json.load(response)
         companies = {item["slug"]: item["id"] for item in metadata["companies"]}
-        self.bolotti_id = companies["bolotti-reis"]
+        self.brc_id = companies["brc"]
 
     def tearDown(self) -> None:
         self.server.shutdown()
@@ -94,7 +94,7 @@ class HttpApplicationTests(unittest.TestCase):
                 "transaction_date": "2026-08-20",
                 "status": "paid",
                 "category": "Tecnologia e sistemas",
-                "company_id": self.bolotti_id,
+                "company_id": self.brc_id,
             }
         ).encode("utf-8")
         request = Request(
@@ -167,7 +167,7 @@ class HttpApplicationTests(unittest.TestCase):
             headers={
                 "Content-Type": "application/xml",
                 "X-Filename": "nota-123.xml",
-                "X-Company-Id": str(self.bolotti_id),
+                "X-Company-Id": str(self.brc_id),
             },
         )
         with self.opener.open(analyze_request) as response:

@@ -231,13 +231,7 @@ class Database:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_documents_company ON fiscal_documents(company_id)"
             )
-            connection.execute(
-                """
-                INSERT INTO companies (name, slug, municipality)
-                VALUES ('Bolotti Reis', 'bolotti-reis', 'São José dos Pinhais/PR')
-                ON CONFLICT(slug) DO NOTHING
-                """
-            )
+            self._migrate_default_companies(connection)
             connection.execute(
                 """
                 UPDATE users
@@ -248,15 +242,8 @@ class Database:
             )
             connection.execute(
                 """
-                INSERT INTO companies (name, slug, municipality)
-                VALUES ('WBK', 'wbk', 'Curitiba/PR')
-                ON CONFLICT(slug) DO NOTHING
-                """
-            )
-            connection.execute(
-                """
                 UPDATE transactions
-                   SET company_id = (SELECT id FROM companies WHERE slug = 'bolotti-reis')
+                   SET company_id = (SELECT id FROM companies WHERE slug = 'brc')
                  WHERE company_id IS NULL
                    AND (notes LIKE '%São José dos Pinhais%' OR notes LIKE '%Sao Jose dos Pinhais%')
                 """
@@ -291,6 +278,110 @@ class Database:
                 SELECT 'all', NULL, month, category, limit_cents FROM budgets
                 """
             )
+
+    @staticmethod
+    def _migrate_default_companies(connection: sqlite3.Connection) -> None:
+        old_company = connection.execute(
+            "SELECT id FROM companies WHERE slug = 'bolotti-reis'"
+        ).fetchone()
+        brc_company = connection.execute(
+            "SELECT id FROM companies WHERE slug = 'brc'"
+        ).fetchone()
+
+        if old_company is not None and brc_company is None:
+            connection.execute(
+                """
+                UPDATE companies
+                   SET name = 'BRC', slug = 'brc', municipality = 'São José dos Pinhais/PR',
+                       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?
+                """,
+                (old_company["id"],),
+            )
+        elif old_company is not None and brc_company is not None:
+            old_id = int(old_company["id"])
+            brc_id = int(brc_company["id"])
+            old_prefix = f"company:{old_id}:"
+            new_prefix = f"company:{brc_id}:"
+            connection.execute(
+                """
+                UPDATE transactions
+                   SET external_key = ? || substr(external_key, ?)
+                 WHERE company_id = ?
+                   AND external_key LIKE ?
+                   AND NOT EXISTS (
+                       SELECT 1
+                         FROM transactions AS target
+                        WHERE target.external_key = ? || substr(transactions.external_key, ?)
+                   )
+                """,
+                (
+                    new_prefix,
+                    len(old_prefix) + 1,
+                    old_id,
+                    f"{old_prefix}%",
+                    new_prefix,
+                    len(old_prefix) + 1,
+                ),
+            )
+            connection.execute(
+                "UPDATE transactions SET company_id = ? WHERE company_id = ?",
+                (brc_id, old_id),
+            )
+            connection.execute(
+                "UPDATE fiscal_documents SET company_id = ? WHERE company_id = ?",
+                (brc_id, old_id),
+            )
+            connection.execute(
+                """
+                DELETE FROM company_goals
+                 WHERE company_id = ?
+                   AND month IN (SELECT month FROM company_goals WHERE company_id = ?)
+                """,
+                (old_id, brc_id),
+            )
+            connection.execute(
+                "UPDATE company_goals SET company_id = ?, scope_key = ? WHERE company_id = ?",
+                (brc_id, f"company:{brc_id}", old_id),
+            )
+            connection.execute(
+                """
+                DELETE FROM company_budgets
+                 WHERE company_id = ?
+                   AND EXISTS (
+                       SELECT 1
+                         FROM company_budgets AS target
+                        WHERE target.company_id = ?
+                          AND target.month = company_budgets.month
+                          AND target.category = company_budgets.category
+                   )
+                """,
+                (old_id, brc_id),
+            )
+            connection.execute(
+                "UPDATE company_budgets SET company_id = ?, scope_key = ? WHERE company_id = ?",
+                (brc_id, f"company:{brc_id}", old_id),
+            )
+            connection.execute("DELETE FROM companies WHERE id = ?", (old_id,))
+
+        connection.execute(
+            """
+            INSERT INTO companies (name, slug, municipality)
+            VALUES ('BRC', 'brc', 'São José dos Pinhais/PR')
+            ON CONFLICT(slug) DO UPDATE SET
+                name = 'BRC', municipality = 'São José dos Pinhais/PR',
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO companies (name, slug, municipality)
+            VALUES ('WBK', 'wbk', 'Curitiba/PR')
+            ON CONFLICT(slug) DO UPDATE SET
+                name = 'WBK', municipality = 'Curitiba/PR',
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            """
+        )
 
     @staticmethod
     def _ensure_column(

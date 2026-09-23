@@ -88,18 +88,18 @@ class FinanceRepository:
 
     def backfill_companies_by_municipality(self) -> int:
         with self.database.connection() as connection:
-            bolotti = connection.execute(
-                "SELECT id FROM companies WHERE slug = 'bolotti-reis'"
+            brc = connection.execute(
+                "SELECT id FROM companies WHERE slug = 'brc'"
             ).fetchone()
             wbk = connection.execute("SELECT id FROM companies WHERE slug = 'wbk'").fetchone()
-            assert bolotti is not None and wbk is not None
+            assert brc is not None and wbk is not None
             first = connection.execute(
                 """
                 UPDATE transactions SET company_id = ?
                  WHERE company_id IS NULL
                    AND (notes LIKE '%São José dos Pinhais%' OR notes LIKE '%Sao Jose dos Pinhais%')
                 """,
-                (bolotti["id"],),
+                (brc["id"],),
             ).rowcount
             second = connection.execute(
                 "UPDATE transactions SET company_id = ? WHERE company_id IS NULL AND notes LIKE '%Curitiba%'",
