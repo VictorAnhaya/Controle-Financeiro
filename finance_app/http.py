@@ -41,7 +41,7 @@ class FinanceHttpApplication:
         config = self.config
 
         class RequestHandler(BaseHTTPRequestHandler):
-            server_version = "BolottiFinance/6.3"
+            server_version = "BolottiFinance/6.4"
 
             def log_message(self, format: str, *args: Any) -> None:
                 print(f"[{self.log_date_time_string()}] {format % args}")
@@ -242,9 +242,26 @@ class FinanceHttpApplication:
 
             def do_DELETE(self) -> None:
                 try:
-                    if self._require_user() is None:
+                    user = self._require_user()
+                    if user is None:
                         return
                     parsed = urlparse(self.path)
+                    company_id = self._company_id(parsed.path)
+                    if company_id is not None:
+                        if self._require_admin(user) is None:
+                            return
+                        if not service.delete_company(company_id):
+                            return self._json({"error": "Empresa não encontrada."}, HTTPStatus.NOT_FOUND)
+                        self.send_response(HTTPStatus.NO_CONTENT)
+                        self.end_headers()
+                        return
+                    document_id = self._document_id(parsed.path)
+                    if document_id is not None:
+                        if not service.delete_document(document_id):
+                            return self._json({"error": "Documento não encontrado."}, HTTPStatus.NOT_FOUND)
+                        self.send_response(HTTPStatus.NO_CONTENT)
+                        self.end_headers()
+                        return
                     transaction_id = self._transaction_id(parsed.path)
                     if transaction_id is None:
                         return self._json({"error": "Rota não encontrada."}, HTTPStatus.NOT_FOUND)
@@ -347,6 +364,26 @@ class FinanceHttpApplication:
                     return int(path.removeprefix(prefix))
                 except ValueError:
                     return None
+
+            @staticmethod
+            def _company_id(path: str) -> int | None:
+                prefix = "/api/companies/"
+                if not path.startswith(prefix):
+                    return None
+                raw_id = path.removeprefix(prefix)
+                if not raw_id.isdigit():
+                    return None
+                return int(raw_id)
+
+            @staticmethod
+            def _document_id(path: str) -> int | None:
+                prefix = "/api/documents/"
+                if not path.startswith(prefix):
+                    return None
+                raw_id = path.removeprefix(prefix)
+                if not raw_id.isdigit():
+                    return None
+                return int(raw_id)
 
             @staticmethod
             def _document_action_id(path: str, action: str) -> int | None:

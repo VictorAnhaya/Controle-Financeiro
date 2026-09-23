@@ -19,6 +19,8 @@ Esta versão substitui os arquivos da versão anterior sem exigir a exclusão do
 - botão de fechar/cancelar lançamento sem validação dos campos obrigatórios;
 - filtro mensal próprio na aba de clientes.
 - inicialização no Render corrigida para o comando `bash start.sh`, sem dependência de Flask.
+- exclusão de empresas pela aba administrativa, bloqueada quando há lançamentos, notas, metas ou orçamentos vinculados;
+- exclusão de notas fiscais e do arquivo anexado, sem apagar um lançamento financeiro já criado.
 
 ## Como substituir
 

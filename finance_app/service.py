@@ -163,6 +163,27 @@ class FinanceService:
             raise ValidationError("Já existe uma empresa com esse nome.", {"name": "Use outro nome."})
         return created
 
+    def delete_company(self, company_id: int) -> bool:
+        company = self.repository.get_company(company_id)
+        if company is None:
+            return False
+        deleted, usage = self.repository.delete_company(company_id)
+        if not deleted and any(usage.values()):
+            labels = {
+                "transactions": "lançamento(s)",
+                "documents": "nota(s) fiscal(is)",
+                "goals": "meta(s)",
+                "budgets": "orçamento(s)",
+            }
+            details = ", ".join(
+                f"{count} {labels[key]}" for key, count in usage.items() if count
+            )
+            raise ValidationError(
+                f"A empresa não pode ser excluída porque possui {details}. "
+                "Exclua os registros vinculados antes de tentar novamente."
+            )
+        return deleted
+
     def list_transactions(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
         self.repository.refresh_overdue(date.today())
         if filters.get("month"):
@@ -567,6 +588,17 @@ class FinanceService:
     def list_documents(self, company: Any = None) -> list[dict[str, Any]]:
         company_id = self._resolve_company(company)
         return [self._public_document(item) for item in self.repository.list_documents(company_id=company_id)]
+
+    def delete_document(self, document_id: int) -> bool:
+        document = self.repository.get_document(document_id)
+        if document is None:
+            return False
+        if not self.repository.delete_document(document_id):
+            return False
+        path = (self.documents_path / document["storage_name"]).resolve()
+        if self.documents_path.resolve() in path.parents:
+            path.unlink(missing_ok=True)
+        return True
 
     def analyze_document(
         self, file_name: str, mime_type: str, content: bytes, company: Any

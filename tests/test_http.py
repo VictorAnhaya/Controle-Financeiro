@@ -195,6 +195,21 @@ class HttpApplicationTests(unittest.TestCase):
         self.assertEqual(linked["transaction"]["amount_cents"], 123_456)
         self.assertEqual(linked["document"]["extraction_status"], "linked")
 
+        delete_request = Request(
+            f"{self.base_url}/api/documents/{document['id']}", method="DELETE"
+        )
+        with self.opener.open(delete_request) as response:
+            self.assertEqual(response.status, 204)
+
+        with self.opener.open(f"{self.base_url}/api/documents") as response:
+            documents = json.load(response)
+        self.assertEqual(documents, [])
+        with self.opener.open(f"{self.base_url}/api/transactions?month=2026-08") as response:
+            transactions = json.load(response)
+        self.assertTrue(
+            any(item["id"] == linked["transaction"]["id"] for item in transactions)
+        )
+
 
 class HttpAuthenticationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -310,6 +325,19 @@ class HttpAuthenticationTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as forbidden_companies:
             user_opener.open(f"{self.base_url}/api/companies")
         self.assertEqual(forbidden_companies.exception.code, 403)
+
+        forbidden_delete = Request(
+            f"{self.base_url}/api/companies/{company['id']}", method="DELETE"
+        )
+        with self.assertRaises(HTTPError) as forbidden_company_delete:
+            user_opener.open(forbidden_delete)
+        self.assertEqual(forbidden_company_delete.exception.code, 403)
+
+        admin_delete = Request(
+            f"{self.base_url}/api/companies/{company['id']}", method="DELETE"
+        )
+        with self.admin_opener.open(admin_delete) as response:
+            self.assertEqual(response.status, 204)
 
 
 if __name__ == "__main__":

@@ -88,11 +88,20 @@ class FinanceServiceTests(unittest.TestCase):
             }
         )
         self.assertEqual(transaction["company_id"], created["id"])
-        self.assertTrue(self.service.delete_transaction(transaction["id"]))
-        self.assertIsNone(self.repository.get_transaction(transaction["id"]))
 
         with self.assertRaises(ValidationError):
             self.service.create_company({"name": "Nova Empresa Ltda"})
+
+        with self.assertRaises(ValidationError):
+            self.service.delete_company(created["id"])
+
+        self.assertTrue(self.service.delete_transaction(transaction["id"]))
+        self.assertIsNone(self.repository.get_transaction(transaction["id"]))
+        self.assertTrue(self.service.delete_company(created["id"]))
+        self.assertIsNone(self.repository.get_company(created["id"]))
+
+        empty_company = self.service.create_company({"name": "Empresa Sem Histórico"})
+        self.assertTrue(self.service.delete_company(empty_company["id"]))
 
     def test_goals_are_independent_per_company(self) -> None:
         self.service.seed_initial_data(PROJECT_ROOT / "data" / "initial_transactions.json")
@@ -405,6 +414,15 @@ class FinanceServiceTests(unittest.TestCase):
         )
         self.assertEqual(income_link["transaction"]["counterparty"], "GRUPO BOLOTTI REIS LTDA")
         self.assertEqual(income_link["transaction"]["counterparty_tax_id"], "98765432000110")
+
+        stored_document = self.repository.get_document(document["id"])
+        stored_file = self.service.documents_path / stored_document["storage_name"]
+        transaction_id = income_link["transaction"]["id"]
+        self.assertTrue(stored_file.exists())
+        self.assertTrue(self.service.delete_document(document["id"]))
+        self.assertIsNone(self.repository.get_document(document["id"]))
+        self.assertFalse(stored_file.exists())
+        self.assertIsNotNone(self.repository.get_transaction(transaction_id))
 
     def test_unsupported_document_is_rejected(self) -> None:
         with self.assertRaises(DocumentReadError):

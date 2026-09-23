@@ -1,4 +1,4 @@
-# Bolotti Finance — Versão 6.3
+# Bolotti Finance — Versão 6.4
 
 Aplicação de controle financeiro criada a partir do relatório de NFS-e do Grupo Bolotti Reis. A base inicial contém as 25 notas ativas de agosto de 2026 (R$ 230.537,13) e as 4 notas canceladas (R$ 48.692,37), conciliadas com a planilha de origem e separadas entre as empresas Bolotti Reis e WBK.
 
@@ -7,6 +7,7 @@ Aplicação de controle financeiro criada a partir do relatório de NFS-e do Gru
 - aba **Consolidado**, somando Bolotti Reis e WBK e comparando faturamento, notas, clientes e cancelamentos;
 - filtro global para visualizar o grupo inteiro, somente Bolotti Reis ou somente WBK;
 - cadastro administrativo de novas empresas, incluídas automaticamente no consolidado e nos filtros;
+- exclusão segura de empresas sem movimentações vinculadas, restrita ao administrador;
 - classificação automática da base original: São José dos Pinhais = Bolotti Reis e Curitiba = WBK;
 - empresa obrigatória em novos lançamentos e em cada nota fiscal anexada;
 - metas, orçamentos, clientes, ranking, relatórios e documentos filtrados por empresa;
@@ -20,6 +21,7 @@ Aplicação de controle financeiro criada a partir do relatório de NFS-e do Gru
 - relatório gerencial e exportação dos lançamentos em CSV;
 - importação da mesma estrutura Excel de NFS-e, com deduplicação automática;
 - central de documentos fiscais com armazenamento local do arquivo original;
+- exclusão de notas fiscais anexadas, preservando o lançamento financeiro quando já existir;
 - leitura estruturada de XML de NF-e e NFS-e;
 - extração de PDF com texto e imagens por OCR;
 - conferência dos campos antes de criar uma despesa ou receita;

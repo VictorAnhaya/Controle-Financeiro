@@ -527,7 +527,9 @@ async function loadCompanies() {
       <td class="transaction-name"><strong>${escapeHtml(company.name)}</strong><small>Código interno: ${company.id}</small></td>
       <td>${escapeHtml(company.municipality || "Não informado")}</td>
       <td><span class="badge active">Disponível no consolidado</span></td>
-    </tr>`).join("") : `<tr><td colspan="3" class="empty-state">Nenhuma empresa cadastrada.</td></tr>`;
+      <td><div class="row-actions"><button class="delete" data-delete-company="${company.id}" title="Excluir empresa">Excluir</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="4" class="empty-state">Nenhuma empresa cadastrada.</td></tr>`;
+  $$('[data-delete-company]').forEach(button => button.addEventListener("click", () => deleteCompany(Number(button.dataset.deleteCompany))));
 }
 
 function openCompanyDialog() {
@@ -552,6 +554,19 @@ async function saveCompany(event) {
     populateDataLists();
     await loadCompanies();
   } catch (error) { $("#companyFormError").textContent = error.message; }
+}
+
+async function deleteCompany(id) {
+  const company = state.companies.find(item => item.id === id);
+  if (!company || !window.confirm(`Excluir a empresa "${company.name}"? A exclusão só será permitida se ela não possuir lançamentos, notas fiscais, metas ou orçamentos.`)) return;
+  try {
+    await api(`/api/companies/${id}`, { method: "DELETE" });
+    if (String(state.company) === String(id)) state.company = "all";
+    state.metadata = await api("/api/meta");
+    populateDataLists();
+    await loadCompanies();
+    toast("Empresa excluída.");
+  } catch (error) { toast(error.message, "error"); }
 }
 
 function openClientDialog(id = null) {
@@ -670,12 +685,27 @@ async function loadDocuments() {
       <td>${formatDate(document.issue_date)}</td>
       <td><span class="badge ${document.extraction_status}">${documentStatus[document.extraction_status]}</span></td>
       <td class="align-right"><strong>${document.total_cents ? formatMoney(document.total_cents) : "—"}</strong></td>
-      <td><div class="document-actions"><a href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Abrir</a>${document.transaction_id ? "" : `<button data-review-document="${document.id}">Conferir</button>`}</div></td>
+      <td><div class="document-actions"><a href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Abrir</a>${document.transaction_id ? "" : `<button data-review-document="${document.id}">Conferir</button>`}<button class="delete" data-delete-document="${document.id}" title="Excluir nota fiscal">Excluir</button></div></td>
     </tr>`).join("") : `<tr><td colspan="7" class="empty-state">Nenhum documento anexado.</td></tr>`;
   $$('[data-review-document]').forEach(button => button.addEventListener("click", () => {
     const document = state.documents.find(item => item.id === Number(button.dataset.reviewDocument));
     if (document) openDocumentReview(document);
   }));
+  $$('[data-delete-document]').forEach(button => button.addEventListener("click", () => deleteDocument(Number(button.dataset.deleteDocument))));
+}
+
+async function deleteDocument(id) {
+  const document = state.documents.find(item => item.id === id);
+  if (!document) return;
+  const linkedWarning = document.transaction_id
+    ? " O lançamento financeiro vinculado será mantido."
+    : "";
+  if (!window.confirm(`Excluir a nota fiscal "${document.file_name}"? O arquivo anexado será removido.${linkedWarning}`)) return;
+  try {
+    await api(`/api/documents/${id}`, { method: "DELETE" });
+    toast("Nota fiscal excluída.");
+    await loadDocuments();
+  } catch (error) { toast(error.message, "error"); }
 }
 
 async function analyzeDocument(file) {

@@ -68,6 +68,24 @@ class FinanceRepository:
             return None
         return self._as_dict(row)
 
+    def delete_company(self, company_id: int) -> tuple[bool, dict[str, int]]:
+        with self.database.connection() as connection:
+            usage = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM transactions WHERE company_id = ?) AS transactions,
+                    (SELECT COUNT(*) FROM fiscal_documents WHERE company_id = ?) AS documents,
+                    (SELECT COUNT(*) FROM company_goals WHERE company_id = ?) AS goals,
+                    (SELECT COUNT(*) FROM company_budgets WHERE company_id = ?) AS budgets
+                """,
+                (company_id, company_id, company_id, company_id),
+            ).fetchone()
+            counts = {key: int(usage[key]) for key in usage.keys()}
+            if any(counts.values()):
+                return False, counts
+            cursor = connection.execute("DELETE FROM companies WHERE id = ?", (company_id,))
+        return cursor.rowcount == 1, counts
+
     def backfill_companies_by_municipality(self) -> int:
         with self.database.connection() as connection:
             bolotti = connection.execute(
@@ -763,6 +781,13 @@ class FinanceRepository:
             ).fetchone()
         assert row is not None
         return self._document_dict(row)
+
+    def delete_document(self, document_id: int) -> bool:
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                "DELETE FROM fiscal_documents WHERE id = ?", (document_id,)
+            )
+        return cursor.rowcount == 1
 
     def company_comparison(self, month: str) -> dict[str, Any]:
         with self.database.connection() as connection:
