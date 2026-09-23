@@ -65,6 +65,35 @@ class FinanceServiceTests(unittest.TestCase):
         self.assertEqual(bolotti["totals"]["income_cents"], 12_366_537)
         self.assertEqual(wbk["totals"]["income_cents"], 10_687_176)
 
+    def test_new_company_is_available_in_consolidated_and_transactions(self) -> None:
+        self.service.seed_initial_data(PROJECT_ROOT / "data" / "initial_transactions.json")
+        created = self.service.create_company(
+            {"name": "Nova Empresa Ltda", "municipality": "Pinhais/PR"}
+        )
+        self.assertEqual(created["slug"], "nova-empresa-ltda")
+
+        consolidated = self.service.company_comparison("2026-08")
+        new_company = next(item for item in consolidated["items"] if item["id"] == created["id"])
+        self.assertEqual(new_company["revenue_cents"], 0)
+
+        transaction = self.service.create_transaction(
+            {
+                "kind": "expense",
+                "description": "Despesa da nova empresa",
+                "amount": "150,00",
+                "transaction_date": "2026-08-20",
+                "status": "paid",
+                "category": "Outros",
+                "company_id": created["id"],
+            }
+        )
+        self.assertEqual(transaction["company_id"], created["id"])
+        self.assertTrue(self.service.delete_transaction(transaction["id"]))
+        self.assertIsNone(self.repository.get_transaction(transaction["id"]))
+
+        with self.assertRaises(ValidationError):
+            self.service.create_company({"name": "Nova Empresa Ltda"})
+
     def test_goals_are_independent_per_company(self) -> None:
         self.service.seed_initial_data(PROJECT_ROOT / "data" / "initial_transactions.json")
         bolotti = self.service.upsert_goal(
@@ -237,6 +266,35 @@ class FinanceServiceTests(unittest.TestCase):
                     "company_id": self.bolotti_id,
                 }
             )
+
+    def test_clients_can_be_filtered_by_revenue_month(self) -> None:
+        self.service.seed_initial_data(PROJECT_ROOT / "data" / "initial_transactions.json")
+        client = self.service.create_client(
+            {
+                "name": "Cliente de Setembro Ltda",
+                "tax_id": "11.222.333/0001-44",
+                "status": "active",
+            }
+        )
+        self.service.create_transaction(
+            {
+                "kind": "income",
+                "description": "Receita de setembro",
+                "amount": "3.000,00",
+                "transaction_date": "2026-09-18",
+                "status": "paid",
+                "category": "Honorários e serviços",
+                "client_id": client["id"],
+                "company_id": self.bolotti_id,
+            }
+        )
+
+        august = self.service.list_clients({"month": "2026-08"})
+        september = self.service.list_clients({"month": "2026-09"})
+        self.assertNotIn(client["id"], {item["id"] for item in august["items"]})
+        self.assertEqual([item["id"] for item in september["items"]], [client["id"]])
+        self.assertEqual(september["items"][0]["last_revenue_date"], "2026-09-18")
+        self.assertEqual(september["summary"]["active_count"], 1)
 
     def test_goals_report_actuals_and_past_month_projection(self) -> None:
         self.service.seed_initial_data(PROJECT_ROOT / "data" / "initial_transactions.json")

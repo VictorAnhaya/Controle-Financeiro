@@ -53,6 +53,21 @@ class FinanceRepository:
             ).fetchone()
         return self._as_dict(row)
 
+    def create_company(self, name: str, slug: str, municipality: str | None) -> dict[str, Any] | None:
+        try:
+            with self.database.connection() as connection:
+                cursor = connection.execute(
+                    "INSERT INTO companies (name, slug, municipality) VALUES (?, ?, ?)",
+                    (name, slug, municipality),
+                )
+                row = connection.execute(
+                    "SELECT id, name, slug, municipality FROM companies WHERE id = ?",
+                    (int(cursor.lastrowid),),
+                ).fetchone()
+        except sqlite3.IntegrityError:
+            return None
+        return self._as_dict(row)
+
     def backfill_companies_by_municipality(self) -> int:
         with self.database.connection() as connection:
             bolotti = connection.execute(
@@ -304,7 +319,7 @@ class FinanceRepository:
         self, month: str, search: str = "", status: str = "", company_id: int | None = None
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
-        parameters: list[Any] = [month, month]
+        parameters: list[Any] = [month, month, month]
         company_join = ""
         if company_id is not None:
             company_join = " AND t.company_id = ?"
@@ -325,12 +340,12 @@ class FinanceRepository:
                        COALESCE(SUM(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' THEN t.amount_cents END), 0) AS total_revenue_cents,
                        COUNT(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' AND substr(t.transaction_date, 1, 7) = ? THEN 1 END) AS month_invoice_count,
                        COALESCE(SUM(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' AND substr(t.transaction_date, 1, 7) = ? THEN t.amount_cents END), 0) AS month_revenue_cents,
-                       MAX(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' THEN t.transaction_date END) AS last_revenue_date
+                       MAX(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' AND substr(t.transaction_date, 1, 7) = ? THEN t.transaction_date END) AS last_revenue_date
                   FROM clients c
                   LEFT JOIN transactions t ON t.client_id = c.id {company_join}
                   {where}
                  GROUP BY c.id
-                 {"HAVING invoice_count > 0" if company_id is not None else ""}
+                 HAVING month_invoice_count > 0
                  ORDER BY c.status ASC, c.name COLLATE NOCASE ASC
                 """,
                 parameters,
@@ -355,9 +370,10 @@ class FinanceRepository:
                     COUNT(DISTINCT CASE WHEN c.status = 'inactive' THEN c.id END) AS inactive_count
                   FROM clients c
                   JOIN transactions t ON t.client_id = c.id AND t.kind = 'income'
-                   AND t.status != 'cancelled' {company_clause}
+                   AND t.status != 'cancelled'
+                   AND substr(t.transaction_date, 1, 7) = ? {company_clause}
                 """,
-                transaction_parameters,
+                [month, *transaction_parameters],
             ).fetchone()
             revenue = connection.execute(
                 f"""

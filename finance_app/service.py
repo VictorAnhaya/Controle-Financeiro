@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import re
+import unicodedata
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
@@ -124,7 +125,7 @@ class FinanceService:
         if text in {"", "all"}:
             if required:
                 raise ValidationError(
-                    "Selecione a empresa.", {"company_id": "Escolha Bolotti Reis ou WBK."}
+                    "Selecione a empresa.", {"company_id": "Escolha uma empresa cadastrada."}
                 )
             return None
         try:
@@ -145,6 +146,22 @@ class FinanceService:
         meta["cost_centers"] = sorted(set(meta["cost_centers"] + self.DEFAULT_COST_CENTERS))
         meta["clients"] = self.repository.client_options()
         return meta
+
+    def list_companies(self) -> list[dict[str, Any]]:
+        return self.repository.list_companies()
+
+    def create_company(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = self._clean_text(payload.get("name"), required=True, max_length=120)
+        municipality = self._clean_text(payload.get("municipality"), max_length=120)
+        assert name
+        normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+        slug = re.sub(r"[^a-z0-9]+", "-", normalized.lower()).strip("-")
+        if not slug:
+            raise ValidationError("Informe um nome de empresa válido.", {"name": "Use letras ou números."})
+        created = self.repository.create_company(name, slug, municipality)
+        if created is None:
+            raise ValidationError("Já existe uma empresa com esse nome.", {"name": "Use outro nome."})
+        return created
 
     def list_transactions(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
         self.repository.refresh_overdue(date.today())
@@ -507,7 +524,7 @@ class FinanceService:
         companies = {item["slug"]: item["id"] for item in company_rows}
         company_slugs = {item["id"]: item["slug"] for item in company_rows}
         rows = parse_nfse_workbook(content)
-        company_counts: dict[str, int] = {"bolotti-reis": 0, "wbk": 0}
+        company_counts: dict[str, int] = {item["slug"]: 0 for item in company_rows}
         for row in rows:
             company_id = selected_company_id
             if company_id is None:

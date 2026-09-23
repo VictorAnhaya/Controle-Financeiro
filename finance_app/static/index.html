@@ -49,6 +49,7 @@
         <button class="nav-item" data-view="budgets"><span>◎</span> Orçamentos</button>
         <button class="nav-item" data-view="goals"><span>⌁</span> Metas e projeções</button>
         <button class="nav-item" data-view="reports"><span>▤</span> Relatórios</button>
+        <button class="nav-item admin-only" data-view="companies" hidden><span>▣</span> Empresas</button>
         <button class="nav-item admin-only" data-view="users" hidden><span>♙</span> Usuários</button>
       </nav>
 
@@ -63,7 +64,7 @@
       <header class="topbar">
         <button class="icon-button menu-button" id="menuButton" aria-label="Abrir menu">☰</button>
         <div>
-          <p class="eyebrow">Bolotti Reis + WBK</p>
+          <p class="eyebrow">Controle financeiro empresarial</p>
           <h1 id="pageTitle">Consolidado</h1>
         </div>
         <div class="topbar-actions">
@@ -79,7 +80,7 @@
 
       <section class="view active" id="consolidatedView">
         <div class="report-hero consolidated-hero">
-          <div><span class="panel-kicker">Bolotti Reis + WBK</span><h2>Visão consolidada das empresas</h2><p>Compare faturamento, notas, clientes e cancelamentos no mesmo período, sem duplicar lançamentos.</p></div>
+          <div><span class="panel-kicker">Todas as empresas</span><h2>Visão consolidada das empresas</h2><p>Compare faturamento, notas, clientes e cancelamentos no mesmo período, incluindo as novas empresas cadastradas.</p></div>
           <span class="scope-badge">Consolidado</span>
         </div>
         <div class="metric-grid">
@@ -140,7 +141,7 @@
             <label>Categoria<select id="categoryFilter"><option value="">Todas</option></select></label>
             <button class="button secondary" id="clearFiltersButton">Limpar</button>
           </div>
-          <div class="table-wrap transactions-table"><table><thead><tr><th>Data</th><th>Empresa</th><th>Lançamento</th><th>Categoria</th><th>Status</th><th class="align-right">Valor</th><th></th></tr></thead><tbody id="transactionsTable"></tbody></table></div>
+          <div class="table-wrap transactions-table"><table><thead><tr><th>Data</th><th>Empresa</th><th>Lançamento</th><th>Categoria</th><th>Status</th><th class="align-right">Valor</th><th class="align-right">Ações</th></tr></thead><tbody id="transactionsTable"></tbody></table></div>
           <div class="table-footer"><span id="transactionsCount">0 lançamentos</span><strong id="transactionsTotal">R$ 0,00</strong></div>
         </article>
       </section>
@@ -198,6 +199,7 @@
         <article class="panel">
           <div class="filter-bar client-filters">
             <label>Localizar<input type="search" id="clientSearch" placeholder="Nome, CPF/CNPJ, contato ou e-mail"></label>
+            <label>Mês da receita<input type="month" id="clientMonthFilter"></label>
             <label>Situação<select id="clientStatusFilter"><option value="">Todos</option><option value="active">Ativos</option><option value="inactive">Inativos</option></select></label>
             <button class="button secondary" id="clearClientFilters" type="button">Limpar</button>
           </div>
@@ -280,12 +282,22 @@
           <div class="table-wrap"><table class="users-table"><thead><tr><th>Nome</th><th>Usuário</th><th>Permissão</th><th>Status</th><th>Último acesso</th><th></th></tr></thead><tbody id="usersTable"></tbody></table></div>
         </article>
       </section>
+
+      <section class="view admin-only" id="companiesView" hidden>
+        <div class="users-header">
+          <div><span class="panel-kicker">Administração</span><h2>Empresas do grupo</h2><p>Cadastre empresas para disponibilizá-las nos lançamentos, filtros, documentos, metas e painel consolidado.</p></div>
+          <button class="button primary" id="newCompanyButton">+ Nova empresa</button>
+        </div>
+        <article class="panel">
+          <div class="table-wrap"><table class="companies-table"><thead><tr><th>Empresa</th><th>Município ou identificação</th><th>Uso no sistema</th></tr></thead><tbody id="companiesTable"></tbody></table></div>
+        </article>
+      </section>
     </main>
   </div>
 
   <dialog id="transactionDialog">
     <form method="dialog" id="transactionForm" class="dialog-form">
-      <div class="dialog-header"><div><span class="panel-kicker">Movimentação financeira</span><h2 id="dialogTitle">Novo lançamento</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></div>
+      <div class="dialog-header"><div><span class="panel-kicker">Movimentação financeira</span><h2 id="dialogTitle">Novo lançamento</h2></div><button class="icon-button" type="button" data-close-dialog="transactionDialog" aria-label="Fechar">×</button></div>
       <input type="hidden" name="id">
       <div class="segmented"><label><input type="radio" name="kind" value="expense" checked><span>Despesa</span></label><label><input type="radio" name="kind" value="income"><span>Receita</span></label></div>
       <div class="form-grid">
@@ -304,7 +316,7 @@
         <label class="span-2">Observações<textarea name="notes" rows="3" maxlength="1000" placeholder="Informações adicionais"></textarea></label>
       </div>
       <p class="form-error" id="formError" role="alert"></p>
-      <div class="dialog-actions"><button class="button secondary" value="cancel">Cancelar</button><button class="button primary" type="submit" value="default">Salvar lançamento</button></div>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog="transactionDialog">Cancelar</button><button class="button primary" type="submit" value="default">Salvar lançamento</button></div>
     </form>
   </dialog>
 
@@ -312,7 +324,7 @@
     <form method="dialog" id="documentReviewForm" class="dialog-form">
       <div class="dialog-header">
         <div><span class="panel-kicker">Conferência obrigatória</span><h2>Dados extraídos da nota</h2><p class="dialog-subtitle" id="reviewFileName"></p></div>
-        <button class="icon-button" value="cancel" aria-label="Fechar">×</button>
+        <button class="icon-button" type="button" data-close-dialog="documentReviewDialog" aria-label="Fechar">×</button>
       </div>
       <input type="hidden" name="document_id">
       <div class="extraction-summary">
@@ -341,13 +353,25 @@
       </div>
       <div id="documentWarnings" class="document-warnings"></div>
       <p class="form-error" id="documentFormError" role="alert"></p>
-      <div class="dialog-actions"><button class="button secondary" value="cancel">Manter sem lançamento</button><button class="button primary" type="submit" value="default">Conferi e quero salvar</button></div>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog="documentReviewDialog">Manter sem lançamento</button><button class="button primary" type="submit" value="default">Conferi e quero salvar</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="companyDialog">
+    <form method="dialog" id="companyForm" class="dialog-form">
+      <div class="dialog-header"><div><span class="panel-kicker">Estrutura empresarial</span><h2>Cadastrar empresa</h2></div><button class="icon-button" type="button" data-close-dialog="companyDialog" aria-label="Fechar">×</button></div>
+      <div class="form-grid">
+        <label class="span-2">Nome da empresa *<input name="name" required maxlength="120" placeholder="Ex.: Nova Empresa Ltda"></label>
+        <label class="span-2">Município ou identificação<input name="municipality" maxlength="120" placeholder="Ex.: Curitiba/PR"></label>
+      </div>
+      <p class="form-error" id="companyFormError" role="alert"></p>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog="companyDialog">Cancelar</button><button class="button primary" type="submit">Cadastrar empresa</button></div>
     </form>
   </dialog>
 
   <dialog id="userDialog">
     <form method="dialog" id="userForm" class="dialog-form">
-      <div class="dialog-header"><div><span class="panel-kicker">Controle de acesso</span><h2 id="userDialogTitle">Novo usuário</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></div>
+      <div class="dialog-header"><div><span class="panel-kicker">Controle de acesso</span><h2 id="userDialogTitle">Novo usuário</h2></div><button class="icon-button" type="button" data-close-dialog="userDialog" aria-label="Fechar">×</button></div>
       <input type="hidden" name="id">
       <div class="form-grid">
         <label class="span-2">Nome completo *<input name="name" required maxlength="120"></label>
@@ -358,13 +382,13 @@
         <label class="user-active-field span-2"><input type="checkbox" name="is_active" checked><span>Usuário ativo e autorizado a entrar</span></label>
       </div>
       <p class="form-error" id="userFormError" role="alert"></p>
-      <div class="dialog-actions"><button class="button secondary" value="cancel">Cancelar</button><button class="button primary" type="submit" value="default">Salvar usuário</button></div>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog="userDialog">Cancelar</button><button class="button primary" type="submit" value="default">Salvar usuário</button></div>
     </form>
   </dialog>
 
   <dialog id="clientDialog">
     <form method="dialog" id="clientForm" class="dialog-form">
-      <div class="dialog-header"><div><span class="panel-kicker">Cadastro de relacionamento</span><h2 id="clientDialogTitle">Novo cliente</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></div>
+      <div class="dialog-header"><div><span class="panel-kicker">Cadastro de relacionamento</span><h2 id="clientDialogTitle">Novo cliente</h2></div><button class="icon-button" type="button" data-close-dialog="clientDialog" aria-label="Fechar">×</button></div>
       <input type="hidden" name="id">
       <div class="form-grid">
         <label class="span-2">Nome ou razão social *<input name="name" required maxlength="180"></label>
@@ -377,7 +401,7 @@
         <label class="span-2">Observações<textarea name="notes" rows="3" maxlength="1000"></textarea></label>
       </div>
       <p class="form-error" id="clientFormError" role="alert"></p>
-      <div class="dialog-actions"><button class="button secondary" value="cancel">Cancelar</button><button class="button primary" type="submit" value="default">Salvar cliente</button></div>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog="clientDialog">Cancelar</button><button class="button primary" type="submit" value="default">Salvar cliente</button></div>
     </form>
   </dialog>
 

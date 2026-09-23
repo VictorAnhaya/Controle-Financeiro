@@ -72,6 +72,9 @@ class HttpApplicationTests(unittest.TestCase):
             html = response.read().decode("utf-8")
         self.assertIn("Bolotti Finance", html)
         self.assertIn('class="view admin-only" id="usersView" hidden', html)
+        self.assertIn('class="view admin-only" id="companiesView" hidden', html)
+        self.assertIn('id="clientMonthFilter"', html)
+        self.assertIn('data-close-dialog="transactionDialog"', html)
 
         with self.opener.open(f"{self.base_url}/styles.css") as response:
             css = response.read().decode("utf-8")
@@ -250,6 +253,16 @@ class HttpAuthenticationTests(unittest.TestCase):
         with self.admin_opener.open(f"{self.base_url}/api/meta") as response:
             self.assertEqual(response.status, 200)
 
+        company_request = Request(
+            f"{self.base_url}/api/companies",
+            data=json.dumps({"name": "Empresa API", "municipality": "Curitiba/PR"}).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.admin_opener.open(company_request) as response:
+            company = json.load(response)
+        self.assertEqual(company["name"], "Empresa API")
+
         create_user = Request(
             f"{self.base_url}/api/users",
             data=json.dumps(
@@ -294,6 +307,9 @@ class HttpAuthenticationTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as forbidden:
             user_opener.open(f"{self.base_url}/api/users")
         self.assertEqual(forbidden.exception.code, 403)
+        with self.assertRaises(HTTPError) as forbidden_companies:
+            user_opener.open(f"{self.base_url}/api/companies")
+        self.assertEqual(forbidden_companies.exception.code, 403)
 
 
 if __name__ == "__main__":

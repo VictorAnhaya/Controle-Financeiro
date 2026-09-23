@@ -1,4 +1,4 @@
-# Bolotti Finance — Versão 6.1
+# Bolotti Finance — Versão 6.3
 
 Aplicação de controle financeiro criada a partir do relatório de NFS-e do Grupo Bolotti Reis. A base inicial contém as 25 notas ativas de agosto de 2026 (R$ 230.537,13) e as 4 notas canceladas (R$ 48.692,37), conciliadas com a planilha de origem e separadas entre as empresas Bolotti Reis e WBK.
 
@@ -6,12 +6,14 @@ Aplicação de controle financeiro criada a partir do relatório de NFS-e do Gru
 
 - aba **Consolidado**, somando Bolotti Reis e WBK e comparando faturamento, notas, clientes e cancelamentos;
 - filtro global para visualizar o grupo inteiro, somente Bolotti Reis ou somente WBK;
+- cadastro administrativo de novas empresas, incluídas automaticamente no consolidado e nos filtros;
 - classificação automática da base original: São José dos Pinhais = Bolotti Reis e Curitiba = WBK;
 - empresa obrigatória em novos lançamentos e em cada nota fiscal anexada;
 - metas, orçamentos, clientes, ranking, relatórios e documentos filtrados por empresa;
 - painel mensal com receitas, despesas, saldo e contas a pagar;
 - gráficos de fluxo diário e gastos por categoria;
 - cadastro, edição, busca, filtros e exclusão de lançamentos;
+- fechamento do formulário de lançamento sem exigir o preenchimento dos campos;
 - controle de status: pago/recebido, pendente, vencido e cancelado;
 - categorias, centros de custo, fornecedor/cliente, documento e observações;
 - orçamento mensal por categoria, com alertas de consumo e estouro;
@@ -29,6 +31,7 @@ Aplicação de controle financeiro criada a partir do relatório de NFS-e do Gru
 - indicadores de concentração dos 3 e 5 maiores clientes;
 - classificação mensal ou consolidada de todo o histórico;
 - cadastro completo de clientes, com CPF/CNPJ, contato, e-mail, telefone, aquisição, situação e observações;
+- filtro mensal na carteira de clientes, mostrando apenas quem teve receita no período e a última receita daquele mês;
 - migração automática da carteira existente a partir das receitas, sem recadastro manual;
 - vínculo entre cliente e lançamento, com preenchimento automático em novas receitas;
 - acompanhamento de receita mensal e acumulada por cliente;
@@ -127,6 +130,13 @@ Variáveis opcionais:
 ## Publicação no Render
 
 O repositório GitHub deste projeto deve ser **privado**, pois a base inicial contém informações financeiras reais.
+
+Se o serviço do Render estiver configurado como ambiente Python em vez de Docker, use:
+
+- **Build Command:** `pip install -r requirements.txt`
+- **Start Command:** `bash start.sh`
+
+O arquivo `start.sh` desta versão inicia diretamente o `run.py`. O projeto não depende de Flask ou Gunicorn.
 
 1. Crie um repositório privado no GitHub e envie o conteúdo da pasta `bolotti-finance` para a raiz dele.
 2. No Render, escolha **New > Blueprint** e conecte esse repositório.

@@ -14,6 +14,11 @@ Esta versão substitui os arquivos da versão anterior sem exigir a exclusão do
 - projeção dos próximos seis meses com sazonalidade;
 - migração automática dos dados já cadastrados.
 - painel de usuários restrito ao administrador inicial, inclusive após troca de login no mesmo navegador.
+- cadastro de empresas integrado ao consolidado e a todos os seletores;
+- exclusão destacada na tabela de lançamentos;
+- botão de fechar/cancelar lançamento sem validação dos campos obrigatórios;
+- filtro mensal próprio na aba de clientes.
+- inicialização no Render corrigida para o comando `bash start.sh`, sem dependência de Flask.
 
 ## Como substituir
 

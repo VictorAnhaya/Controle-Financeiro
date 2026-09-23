@@ -41,7 +41,7 @@ class FinanceHttpApplication:
         config = self.config
 
         class RequestHandler(BaseHTTPRequestHandler):
-            server_version = "BolottiFinance/6.1"
+            server_version = "BolottiFinance/6.3"
 
             def log_message(self, format: str, *args: Any) -> None:
                 print(f"[{self.log_date_time_string()}] {format % args}")
@@ -70,6 +70,10 @@ class FinanceHttpApplication:
                         if self._require_admin(user) is None:
                             return
                         return self._json(auth.list_users())
+                    if parsed.path == "/api/companies":
+                        if self._require_admin(user) is None:
+                            return
+                        return self._json(service.list_companies())
                     if parsed.path == "/api/meta":
                         return self._json(service.metadata())
                     if parsed.path == "/api/dashboard":
@@ -163,6 +167,10 @@ class FinanceHttpApplication:
                         if self._require_admin(user) is None:
                             return
                         return self._json(auth.create_user(self._json_body()), HTTPStatus.CREATED)
+                    if parsed.path == "/api/companies":
+                        if self._require_admin(user) is None:
+                            return
+                        return self._json(service.create_company(self._json_body()), HTTPStatus.CREATED)
                     if parsed.path == "/api/transactions":
                         return self._json(service.create_transaction(self._json_body()), HTTPStatus.CREATED)
                     if parsed.path == "/api/clients":
@@ -271,7 +279,7 @@ class FinanceHttpApplication:
             def _require_admin(self, user: dict[str, Any]) -> dict[str, Any] | None:
                 if user["role"] != "admin":
                     self._json(
-                        {"error": "Apenas administradores podem gerenciar usuários."},
+                        {"error": "Apenas o administrador pode acessar esta área."},
                         HTTPStatus.FORBIDDEN,
                     )
                     return None

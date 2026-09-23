@@ -4,8 +4,10 @@ const state = {
   user: null,
   users: [],
   clients: [],
+  companies: [],
   goals: null,
   month: "",
+  clientMonth: "",
   metadata: { categories: [], cost_centers: [], clients: [], companies: [] },
   transactions: [],
   documents: [],
@@ -103,7 +105,9 @@ async function enterApplication(user) {
   state.metadata = await api("/api/meta");
   const currentMonth = new Date().toISOString().slice(0, 7);
   state.month = state.metadata.latest_month || currentMonth;
+  state.clientMonth = state.month;
   $("#monthPicker").value = state.month;
+  $("#clientMonthFilter").value = state.clientMonth;
   populateDataLists();
   await loadCurrentView();
 }
@@ -197,12 +201,16 @@ function wireEvents() {
   $("#newClientButton").addEventListener("click", () => openClientDialog());
   $("#clientForm").addEventListener("submit", saveClient);
   $("#clientStatusFilter").addEventListener("change", loadClients);
+  $("#clientMonthFilter").addEventListener("change", event => { state.clientMonth = event.target.value || state.month; loadClients(); });
   $("#clientSearch").addEventListener("input", debounce(loadClients, 300));
-  $("#clearClientFilters").addEventListener("click", () => { $("#clientSearch").value = ""; $("#clientStatusFilter").value = ""; loadClients(); });
+  $("#clearClientFilters").addEventListener("click", () => { $("#clientSearch").value = ""; $("#clientStatusFilter").value = ""; state.clientMonth = state.month; $("#clientMonthFilter").value = state.clientMonth; loadClients(); });
   $("#goalForm").addEventListener("submit", saveGoal);
   $("#exportButton").addEventListener("click", exportReport);
   $("#newUserButton").addEventListener("click", () => openUserDialog());
   $("#userForm").addEventListener("submit", saveUser);
+  $("#newCompanyButton").addEventListener("click", openCompanyDialog);
+  $("#companyForm").addEventListener("submit", saveCompany);
+  $$('[data-close-dialog]').forEach(button => button.addEventListener("click", () => $("#" + button.dataset.closeDialog).close()));
   $("#clearFiltersButton").addEventListener("click", clearFilters);
   ["#kindFilter", "#statusFilter", "#categoryFilter"].forEach(selector => $(selector).addEventListener("change", loadTransactions));
   $("#searchFilter").addEventListener("input", debounce(loadTransactions, 300));
@@ -214,13 +222,13 @@ function wireEvents() {
 }
 
 function switchView(view) {
-  if (view === "users" && state.user?.role !== "admin") return;
+  if (["users", "companies"].includes(view) && state.user?.role !== "admin") return;
   if (view === "consolidated") {
     state.company = "all";
     $("#companyPicker").value = "all";
   }
   state.view = view;
-  const titles = { consolidated: "Consolidado", dashboard: "Visão geral", transactions: "Lançamentos", clients: "Clientes", documents: "Notas fiscais", ranking: "Ranking de clientes", budgets: "Orçamentos", goals: "Metas e projeções", reports: "Relatórios", users: "Usuários" };
+  const titles = { consolidated: "Consolidado", dashboard: "Visão geral", transactions: "Lançamentos", clients: "Clientes", documents: "Notas fiscais", ranking: "Ranking de clientes", budgets: "Orçamentos", goals: "Metas e projeções", reports: "Relatórios", companies: "Empresas", users: "Usuários" };
   $("#pageTitle").textContent = titles[view];
   $$(".view").forEach(element => element.classList.remove("active"));
   $(`#${view}View`).classList.add("active");
@@ -239,6 +247,7 @@ async function loadCurrentView() {
   if (state.view === "budgets") return loadBudgets();
   if (state.view === "goals") return loadGoals();
   if (state.view === "reports") return loadReports();
+  if (state.view === "companies") return loadCompanies();
   if (state.view === "users") return loadUsers();
 }
 
@@ -419,7 +428,7 @@ async function loadTransactions() {
       <td>${escapeHtml(row.category)}</td>
       <td><span class="badge ${row.status}">${statusLabel[row.status]}</span></td>
       <td class="align-right"><strong class="amount-${row.kind}">${row.kind === "expense" ? "−" : "+"} ${formatMoney(row.amount_cents)}</strong></td>
-      <td><div class="row-actions"><button data-edit="${row.id}">Editar</button><button class="delete" data-delete="${row.id}">Excluir</button></div></td>
+      <td><div class="row-actions"><button data-edit="${row.id}" title="Editar lançamento">Editar</button><button class="delete" data-delete="${row.id}" title="Excluir lançamento definitivamente">Excluir</button></div></td>
     </tr>`).join("") : `<tr><td colspan="7" class="empty-state">Nenhum lançamento encontrado.</td></tr>`;
   $("#transactionsCount").textContent = `${integer.format(rows.length)} lançamento${rows.length === 1 ? "" : "s"}`;
   const net = rows.reduce((sum, row) => sum + (row.kind === "income" ? row.amount_cents : -row.amount_cents), 0);
@@ -488,7 +497,9 @@ async function deleteTransaction(id) {
 }
 
 async function loadClients() {
-  const params = queryString({ month: state.month, company: state.company, search: $("#clientSearch").value.trim(), status: $("#clientStatusFilter").value });
+  const selectedMonth = $("#clientMonthFilter").value || state.clientMonth || state.month;
+  state.clientMonth = selectedMonth;
+  const params = queryString({ month: selectedMonth, company: state.company, search: $("#clientSearch").value.trim(), status: $("#clientStatusFilter").value });
   const data = await api(`/api/clients?${params}`);
   state.clients = data.items;
   $("#activeClientsMetric").textContent = integer.format(data.summary.active_count);
@@ -506,6 +517,41 @@ async function loadClients() {
       <td><div class="row-actions"><button data-edit-client="${client.id}">Editar</button></div></td>
     </tr>`).join("") : `<tr><td colspan="7" class="empty-state">Nenhum cliente encontrado.</td></tr>`;
   $$('[data-edit-client]').forEach(button => button.addEventListener("click", () => openClientDialog(Number(button.dataset.editClient))));
+}
+
+async function loadCompanies() {
+  const companies = await api("/api/companies");
+  state.companies = companies;
+  $("#companiesTable").innerHTML = companies.length ? companies.map(company => `
+    <tr>
+      <td class="transaction-name"><strong>${escapeHtml(company.name)}</strong><small>Código interno: ${company.id}</small></td>
+      <td>${escapeHtml(company.municipality || "Não informado")}</td>
+      <td><span class="badge active">Disponível no consolidado</span></td>
+    </tr>`).join("") : `<tr><td colspan="3" class="empty-state">Nenhuma empresa cadastrada.</td></tr>`;
+}
+
+function openCompanyDialog() {
+  $("#companyForm").reset();
+  $("#companyFormError").textContent = "";
+  $("#companyDialog").showModal();
+}
+
+async function saveCompany(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form));
+  try {
+    await api("/api/companies", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    $("#companyDialog").close();
+    toast("Empresa cadastrada e adicionada ao consolidado.");
+    state.metadata = await api("/api/meta");
+    populateDataLists();
+    await loadCompanies();
+  } catch (error) { $("#companyFormError").textContent = error.message; }
 }
 
 function openClientDialog(id = null) {
