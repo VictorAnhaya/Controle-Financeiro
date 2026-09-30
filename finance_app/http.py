@@ -41,7 +41,7 @@ class FinanceHttpApplication:
         config = self.config
 
         class RequestHandler(BaseHTTPRequestHandler):
-            server_version = "BolottiFinance/6.5"
+            server_version = "BolottiFinance/6.6"
 
             def log_message(self, format: str, *args: Any) -> None:
                 print(f"[{self.log_date_time_string()}] {format % args}")
@@ -74,6 +74,11 @@ class FinanceHttpApplication:
                         if self._require_admin(user) is None:
                             return
                         return self._json(service.list_companies())
+                    if parsed.path == "/api/commissions":
+                        if self._require_admin(user) is None:
+                            return
+                        query = self._query(parsed.query)
+                        return self._json(service.commission_dashboard(query.get("month", "")))
                     if parsed.path == "/api/meta":
                         return self._json(service.metadata())
                     if parsed.path == "/api/dashboard":
@@ -171,6 +176,20 @@ class FinanceHttpApplication:
                         if self._require_admin(user) is None:
                             return
                         return self._json(service.create_company(self._json_body()), HTTPStatus.CREATED)
+                    if parsed.path == "/api/partners":
+                        if self._require_admin(user) is None:
+                            return
+                        return self._json(service.create_partner(self._json_body()), HTTPStatus.CREATED)
+                    if parsed.path == "/api/referrals":
+                        if self._require_admin(user) is None:
+                            return
+                        return self._json(service.create_referral(self._json_body()), HTTPStatus.CREATED)
+                    if parsed.path == "/api/commission-payments":
+                        if self._require_admin(user) is None:
+                            return
+                        return self._json(
+                            service.create_commission_payment(self._json_body()), HTTPStatus.CREATED
+                        )
                     if parsed.path == "/api/transactions":
                         return self._json(service.create_transaction(self._json_body()), HTTPStatus.CREATED)
                     if parsed.path == "/api/clients":
@@ -230,6 +249,22 @@ class FinanceHttpApplication:
                         if updated_client is None:
                             return self._json({"error": "Cliente não encontrado."}, HTTPStatus.NOT_FOUND)
                         return self._json(updated_client)
+                    partner_id = self._partner_id(parsed.path)
+                    if partner_id is not None:
+                        if self._require_admin(user) is None:
+                            return
+                        updated_partner = service.update_partner(partner_id, self._json_body())
+                        if updated_partner is None:
+                            return self._json({"error": "Sócio não encontrado."}, HTTPStatus.NOT_FOUND)
+                        return self._json(updated_partner)
+                    referral_id = self._referral_id(parsed.path)
+                    if referral_id is not None:
+                        if self._require_admin(user) is None:
+                            return
+                        updated_referral = service.update_referral(referral_id, self._json_body())
+                        if updated_referral is None:
+                            return self._json({"error": "Regra não encontrada."}, HTTPStatus.NOT_FOUND)
+                        return self._json(updated_referral)
                     transaction_id = self._transaction_id(parsed.path)
                     if transaction_id is None:
                         return self._json({"error": "Rota não encontrada."}, HTTPStatus.NOT_FOUND)
@@ -259,6 +294,33 @@ class FinanceHttpApplication:
                     if document_id is not None:
                         if not service.delete_document(document_id):
                             return self._json({"error": "Documento não encontrado."}, HTTPStatus.NOT_FOUND)
+                        self.send_response(HTTPStatus.NO_CONTENT)
+                        self.end_headers()
+                        return
+                    partner_id = self._partner_id(parsed.path)
+                    if partner_id is not None:
+                        if self._require_admin(user) is None:
+                            return
+                        if not service.delete_partner(partner_id):
+                            return self._json({"error": "Sócio não encontrado."}, HTTPStatus.NOT_FOUND)
+                        self.send_response(HTTPStatus.NO_CONTENT)
+                        self.end_headers()
+                        return
+                    referral_id = self._referral_id(parsed.path)
+                    if referral_id is not None:
+                        if self._require_admin(user) is None:
+                            return
+                        if not service.delete_referral(referral_id):
+                            return self._json({"error": "Regra não encontrada."}, HTTPStatus.NOT_FOUND)
+                        self.send_response(HTTPStatus.NO_CONTENT)
+                        self.end_headers()
+                        return
+                    payment_id = self._commission_payment_id(parsed.path)
+                    if payment_id is not None:
+                        if self._require_admin(user) is None:
+                            return
+                        if not service.delete_commission_payment(payment_id):
+                            return self._json({"error": "Pagamento não encontrado."}, HTTPStatus.NOT_FOUND)
                         self.send_response(HTTPStatus.NO_CONTENT)
                         self.end_headers()
                         return
@@ -364,6 +426,30 @@ class FinanceHttpApplication:
                     return int(path.removeprefix(prefix))
                 except ValueError:
                     return None
+
+            @staticmethod
+            def _partner_id(path: str) -> int | None:
+                prefix = "/api/partners/"
+                if not path.startswith(prefix):
+                    return None
+                raw_id = path.removeprefix(prefix)
+                return int(raw_id) if raw_id.isdigit() else None
+
+            @staticmethod
+            def _referral_id(path: str) -> int | None:
+                prefix = "/api/referrals/"
+                if not path.startswith(prefix):
+                    return None
+                raw_id = path.removeprefix(prefix)
+                return int(raw_id) if raw_id.isdigit() else None
+
+            @staticmethod
+            def _commission_payment_id(path: str) -> int | None:
+                prefix = "/api/commission-payments/"
+                if not path.startswith(prefix):
+                    return None
+                raw_id = path.removeprefix(prefix)
+                return int(raw_id) if raw_id.isdigit() else None
 
             @staticmethod
             def _company_id(path: str) -> int | None:

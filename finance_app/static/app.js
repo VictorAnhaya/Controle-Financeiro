@@ -15,6 +15,7 @@ const state = {
   reviewDocument: null,
   dashboard: null,
   consolidated: null,
+  commissions: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -169,6 +170,18 @@ function populateDataLists() {
   $("#companyPicker").innerHTML = `<option value="all">Consolidado</option>${companyOptions}`;
   $("#companyPicker").value = state.company;
   $("#transactionCompany").innerHTML = `<option value="">Selecione</option>${companyOptions}`;
+  updateCommissionVisibility();
+}
+
+function brcCompany() {
+  return (state.metadata.companies || []).find(item => item.slug === "brc");
+}
+
+function updateCommissionVisibility() {
+  const brc = brcCompany();
+  const allowed = state.user?.role === "admin" && brc && String(brc.id) === String(state.company);
+  $$(".brc-only").forEach(element => { element.hidden = !allowed; });
+  return Boolean(allowed);
 }
 
 function wireEvents() {
@@ -178,6 +191,8 @@ function wireEvents() {
   $("#monthPicker").addEventListener("change", async event => { state.month = event.target.value; await loadCurrentView(); });
   $("#companyPicker").addEventListener("change", async event => {
     state.company = event.target.value;
+    const commissionAllowed = updateCommissionVisibility();
+    if (state.view === "commissions" && !commissionAllowed) return switchView("dashboard");
     if (state.view === "consolidated" && state.company !== "all") return switchView("dashboard");
     await loadCurrentView();
   });
@@ -210,6 +225,14 @@ function wireEvents() {
   $("#userForm").addEventListener("submit", saveUser);
   $("#newCompanyButton").addEventListener("click", openCompanyDialog);
   $("#companyForm").addEventListener("submit", saveCompany);
+  $("#newPartnerButton").addEventListener("click", () => openPartnerDialog());
+  $("#partnerForm").addEventListener("submit", savePartner);
+  $("#newReferralButton").addEventListener("click", () => openReferralDialog());
+  $("#referralForm").addEventListener("submit", saveReferral);
+  $("#referralPartner").addEventListener("change", applyPartnerDefaultPercentage);
+  $("#newCommissionPaymentButton").addEventListener("click", openCommissionPaymentDialog);
+  $("#commissionPaymentForm").addEventListener("submit", saveCommissionPayment);
+  $("#commissionPaymentPartner").addEventListener("change", applyPendingCommissionAmount);
   $$('[data-close-dialog]').forEach(button => button.addEventListener("click", () => $("#" + button.dataset.closeDialog).close()));
   $("#clearFiltersButton").addEventListener("click", clearFilters);
   ["#kindFilter", "#statusFilter", "#categoryFilter"].forEach(selector => $(selector).addEventListener("change", loadTransactions));
@@ -222,13 +245,17 @@ function wireEvents() {
 }
 
 function switchView(view) {
-  if (["users", "companies"].includes(view) && state.user?.role !== "admin") return;
+  if (["users", "companies", "commissions"].includes(view) && state.user?.role !== "admin") return;
+  if (view === "commissions" && !updateCommissionVisibility()) {
+    toast("Selecione a empresa BRC para acessar sócios e comissões.", "error");
+    return;
+  }
   if (view === "consolidated") {
     state.company = "all";
     $("#companyPicker").value = "all";
   }
   state.view = view;
-  const titles = { consolidated: "Consolidado", dashboard: "Visão geral", transactions: "Lançamentos", clients: "Clientes", documents: "Notas fiscais", ranking: "Ranking de clientes", budgets: "Orçamentos", goals: "Metas e projeções", reports: "Relatórios", companies: "Empresas", users: "Usuários" };
+  const titles = { consolidated: "Consolidado", dashboard: "Visão geral", transactions: "Lançamentos", clients: "Clientes", documents: "Notas fiscais", ranking: "Ranking de clientes", budgets: "Orçamentos", goals: "Metas e projeções", reports: "Relatórios", commissions: "Sócios e comissões", companies: "Empresas", users: "Usuários" };
   $("#pageTitle").textContent = titles[view];
   $$(".view").forEach(element => element.classList.remove("active"));
   $(`#${view}View`).classList.add("active");
@@ -247,6 +274,7 @@ async function loadCurrentView() {
   if (state.view === "budgets") return loadBudgets();
   if (state.view === "goals") return loadGoals();
   if (state.view === "reports") return loadReports();
+  if (state.view === "commissions") return loadCommissions();
   if (state.view === "companies") return loadCompanies();
   if (state.view === "users") return loadUsers();
 }
@@ -877,6 +905,211 @@ async function loadReports() {
 }
 
 function exportReport() { window.location.href = `/api/reports/export.csv?${queryString({ month: state.month, company: state.company })}`; }
+
+function formatPercentage(value) {
+  return `${Number(value || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+}
+
+function centsForInput(cents) {
+  return (Number(cents || 0) / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+async function loadCommissions() {
+  if (!updateCommissionVisibility()) return;
+  const data = await api(`/api/commissions?month=${state.month}`);
+  state.commissions = data;
+  $("#commissionBaseMetric").textContent = formatMoney(data.summary.base_cents);
+  $("#commissionCalculatedMetric").textContent = formatMoney(data.summary.commission_cents);
+  $("#commissionPaidMetric").textContent = formatMoney(data.summary.paid_cents);
+  $("#commissionPendingMetric").textContent = formatMoney(data.summary.pending_cents);
+
+  $("#partnersTable").innerHTML = data.partners.length ? data.partners.map(partner => `
+    <tr>
+      <td class="user-name"><strong>${escapeHtml(partner.name)}</strong><small>${escapeHtml(partner.email || partner.phone || "Sem contato informado")}</small></td>
+      <td>${formatPercentage(partner.default_percentage_basis_points / 100)}</td>
+      <td>${integer.format(partner.referral_count)}</td>
+      <td><span class="badge ${partner.is_active ? "active" : "inactive"}">${partner.is_active ? "Ativo" : "Inativo"}</span></td>
+      <td><div class="row-actions"><button data-edit-partner="${partner.id}">Editar</button><button class="delete" data-delete-partner="${partner.id}">Excluir</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="5" class="empty-state">Cadastre o primeiro sócio da BRC.</td></tr>`;
+
+  const commissionStatus = { paid: "Pago", partial: "Parcial", pending: "Pendente" };
+  $("#partnerCommissionTable").innerHTML = data.partner_totals.length ? data.partner_totals.map(item => `
+    <tr>
+      <td><strong>${escapeHtml(item.partner_name)}</strong><small class="table-note">${integer.format(item.active_referral_count)} cliente(s) ativo(s)</small></td>
+      <td>${formatMoney(item.base_cents)}</td>
+      <td><strong>${formatMoney(item.commission_cents)}</strong></td>
+      <td>${formatMoney(item.paid_cents)}</td>
+      <td class="${item.pending_cents ? "amount-expense" : "amount-income"}">${formatMoney(item.pending_cents)}</td>
+      <td><span class="badge ${item.status === "paid" ? "paid" : item.status === "partial" ? "pending" : "overdue"}">${commissionStatus[item.status]}</span></td>
+    </tr>`).join("") : `<tr><td colspan="6" class="empty-state">Nenhuma comissão para demonstrar.</td></tr>`;
+
+  $("#referralsTable").innerHTML = data.referrals.length ? data.referrals.map(rule => `
+    <tr class="${rule.is_active ? "" : "muted-row"}">
+      <td>${escapeHtml(rule.partner_name)}</td>
+      <td><strong>${escapeHtml(rule.client_name)}</strong><small class="table-note">${escapeHtml(formatTaxId(rule.client_tax_id || ""))}</small></td>
+      <td>${formatPercentage(rule.percentage)}</td>
+      <td>${rule.calculation_basis === "received" ? "Recebido" : "Faturado"}</td>
+      <td>${rule.recurrence === "recurring" ? "Todas as receitas" : "Primeira receita"}</td>
+      <td>${formatDate(rule.start_date)}${rule.end_date ? ` até ${formatDate(rule.end_date)}` : " em diante"}</td>
+      <td><strong>${formatMoney(rule.commission_cents)}</strong><small class="table-note">Base: ${formatMoney(rule.base_cents)}</small></td>
+      <td><div class="row-actions"><button data-edit-referral="${rule.id}">Editar</button><button class="delete" data-delete-referral="${rule.id}">Excluir</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="8" class="empty-state">Nenhum cliente foi vinculado a um sócio.</td></tr>`;
+
+  $("#commissionPaymentsTable").innerHTML = data.payments.length ? data.payments.map(payment => `
+    <tr>
+      <td>${formatDate(payment.paid_date)}</td><td>${escapeHtml(payment.partner_name)}</td><td>${escapeHtml(payment.month)}</td>
+      <td class="align-right amount-income"><strong>${formatMoney(payment.amount_cents)}</strong></td>
+      <td>${escapeHtml(payment.notes || "—")}</td>
+      <td><div class="row-actions"><button class="delete" data-delete-commission-payment="${payment.id}">Excluir</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="6" class="empty-state">Nenhum pagamento registrado neste mês.</td></tr>`;
+
+  $$('[data-edit-partner]').forEach(button => button.addEventListener("click", () => openPartnerDialog(Number(button.dataset.editPartner))));
+  $$('[data-delete-partner]').forEach(button => button.addEventListener("click", () => deletePartner(Number(button.dataset.deletePartner))));
+  $$('[data-edit-referral]').forEach(button => button.addEventListener("click", () => openReferralDialog(Number(button.dataset.editReferral))));
+  $$('[data-delete-referral]').forEach(button => button.addEventListener("click", () => deleteReferral(Number(button.dataset.deleteReferral))));
+  $$('[data-delete-commission-payment]').forEach(button => button.addEventListener("click", () => deleteCommissionPayment(Number(button.dataset.deleteCommissionPayment))));
+}
+
+function openPartnerDialog(id = null) {
+  const form = $("#partnerForm");
+  form.reset();
+  form.elements.id.value = id || "";
+  form.elements.default_percentage.value = "0,00";
+  form.elements.is_active.checked = true;
+  $("#partnerFormError").textContent = "";
+  $("#partnerDialogTitle").textContent = id ? "Editar sócio" : "Novo sócio";
+  if (id) {
+    const partner = state.commissions?.partners.find(item => item.id === id);
+    if (!partner) return;
+    form.elements.name.value = partner.name;
+    form.elements.tax_id.value = partner.tax_id || "";
+    form.elements.default_percentage.value = String(partner.default_percentage_basis_points / 100).replace(".", ",");
+    form.elements.phone.value = partner.phone || "";
+    form.elements.email.value = partner.email || "";
+    form.elements.is_active.checked = Boolean(partner.is_active);
+    form.elements.notes.value = partner.notes || "";
+  }
+  $("#partnerDialog").showModal();
+}
+
+async function savePartner(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form));
+  const id = payload.id;
+  delete payload.id;
+  payload.is_active = form.elements.is_active.checked;
+  try {
+    await api(id ? `/api/partners/${id}` : "/api/partners", { method: id ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    $("#partnerDialog").close();
+    toast(id ? "Sócio atualizado." : "Sócio cadastrado.");
+    await loadCommissions();
+  } catch (error) { $("#partnerFormError").textContent = error.message; }
+}
+
+async function deletePartner(id) {
+  const partner = state.commissions?.partners.find(item => item.id === id);
+  if (!partner || !confirm(`Excluir o cadastro de ${partner.name}? Cadastros com histórico devem ser apenas desativados.`)) return;
+  try { await api(`/api/partners/${id}`, { method: "DELETE" }); toast("Sócio excluído."); await loadCommissions(); }
+  catch (error) { toast(error.message, "error"); }
+}
+
+function referralOptions() {
+  const partners = state.commissions?.partners || [];
+  $("#referralPartner").innerHTML = `<option value="">Selecione</option>${partners.map(item => `<option value="${item.id}">${escapeHtml(item.name)}${item.is_active ? "" : " (inativo)"}</option>`).join("")}`;
+  $("#referralClient").innerHTML = `<option value="">Selecione</option>${(state.metadata.clients || []).map(item => `<option value="${item.id}">${escapeHtml(item.name)}${item.tax_id ? ` · ${escapeHtml(formatTaxId(item.tax_id))}` : ""}</option>`).join("")}`;
+}
+
+function openReferralDialog(id = null) {
+  if (!state.commissions?.partners.length) { toast("Cadastre um sócio antes de vincular clientes.", "error"); return; }
+  const form = $("#referralForm");
+  form.reset();
+  referralOptions();
+  form.elements.id.value = id || "";
+  form.elements.start_date.value = `${state.month}-01`;
+  form.elements.is_active.checked = true;
+  $("#referralFormError").textContent = "";
+  $("#referralDialogTitle").textContent = id ? "Editar regra de participação" : "Nova regra de participação";
+  if (id) {
+    const rule = state.commissions.referrals.find(item => item.id === id);
+    if (!rule) return;
+    form.elements.partner_id.value = rule.partner_id;
+    form.elements.client_id.value = rule.client_id;
+    form.elements.percentage.value = String(rule.percentage).replace(".", ",");
+    form.elements.calculation_basis.value = rule.calculation_basis;
+    form.elements.recurrence.value = rule.recurrence;
+    form.elements.start_date.value = rule.start_date;
+    form.elements.end_date.value = rule.end_date || "";
+    form.elements.is_active.checked = Boolean(rule.is_active);
+    form.elements.notes.value = rule.notes || "";
+  }
+  $("#referralDialog").showModal();
+}
+
+function applyPartnerDefaultPercentage() {
+  const form = $("#referralForm");
+  if (form.elements.id.value) return;
+  const partner = state.commissions?.partners.find(item => item.id === Number(form.elements.partner_id.value));
+  if (partner && partner.default_percentage_basis_points) {
+    form.elements.percentage.value = String(partner.default_percentage_basis_points / 100).replace(".", ",");
+  }
+}
+
+async function saveReferral(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form));
+  const id = payload.id;
+  delete payload.id;
+  payload.is_active = form.elements.is_active.checked;
+  try {
+    await api(id ? `/api/referrals/${id}` : "/api/referrals", { method: id ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    $("#referralDialog").close();
+    toast(id ? "Regra atualizada." : "Cliente vinculado ao sócio.");
+    await loadCommissions();
+  } catch (error) { $("#referralFormError").textContent = error.message; }
+}
+
+async function deleteReferral(id) {
+  if (!confirm("Excluir esta regra de participação? Os pagamentos já registrados serão preservados.")) return;
+  try { await api(`/api/referrals/${id}`, { method: "DELETE" }); toast("Regra excluída."); await loadCommissions(); }
+  catch (error) { toast(error.message, "error"); }
+}
+
+function openCommissionPaymentDialog() {
+  if (!state.commissions?.partners.length) { toast("Cadastre um sócio antes de registrar pagamentos.", "error"); return; }
+  const form = $("#commissionPaymentForm");
+  form.reset();
+  $("#commissionPaymentFormError").textContent = "";
+  $("#commissionPaymentPartner").innerHTML = `<option value="">Selecione</option>${state.commissions.partners.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}`;
+  form.elements.month.value = state.month;
+  form.elements.paid_date.value = new Date().toISOString().slice(0, 10);
+  $("#commissionPaymentDialog").showModal();
+}
+
+function applyPendingCommissionAmount() {
+  const form = $("#commissionPaymentForm");
+  const total = state.commissions?.partner_totals.find(item => item.partner_id === Number(form.elements.partner_id.value));
+  form.elements.amount.value = total?.pending_cents ? centsForInput(total.pending_cents) : "";
+}
+
+async function saveCommissionPayment(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form));
+  try {
+    await api("/api/commission-payments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    $("#commissionPaymentDialog").close();
+    toast("Pagamento de comissão registrado.");
+    await loadCommissions();
+  } catch (error) { $("#commissionPaymentFormError").textContent = error.message; }
+}
+
+async function deleteCommissionPayment(id) {
+  if (!confirm("Excluir este pagamento de comissão? O valor voltará a aparecer como pendente.")) return;
+  try { await api(`/api/commission-payments/${id}`, { method: "DELETE" }); toast("Pagamento excluído."); await loadCommissions(); }
+  catch (error) { toast(error.message, "error"); }
+}
 
 async function importWorkbook(event) {
   const file = event.target.files[0]; if (!file) return;

@@ -49,6 +49,7 @@
         <button class="nav-item" data-view="budgets"><span>◎</span> Orçamentos</button>
         <button class="nav-item" data-view="goals"><span>⌁</span> Metas e projeções</button>
         <button class="nav-item" data-view="reports"><span>▤</span> Relatórios</button>
+        <button class="nav-item admin-only brc-only" data-view="commissions" hidden><span>％</span> Sócios e comissões</button>
         <button class="nav-item admin-only" data-view="companies" hidden><span>▣</span> Empresas</button>
         <button class="nav-item admin-only" data-view="users" hidden><span>♙</span> Usuários</button>
       </nav>
@@ -273,6 +274,40 @@
         <article class="panel"><div class="panel-header"><div><span class="panel-kicker">Análise gerencial</span><h2>Indicadores do período</h2></div></div><div id="reportInsights" class="insights-grid"></div></article>
       </section>
 
+      <section class="view admin-only" id="commissionsView" hidden>
+        <div class="users-header commissions-header">
+          <div><span class="panel-kicker">Exclusivo da BRC</span><h2>Sócios e comissões</h2><p>Cadastre os sócios, vincule os clientes indicados e acompanhe os valores calculados e pagos em cada mês.</p></div>
+          <div class="commission-header-actions"><button class="button secondary" id="newReferralButton">+ Vincular cliente</button><button class="button primary" id="newPartnerButton">+ Novo sócio</button></div>
+        </div>
+        <div class="metric-grid commission-metrics">
+          <article class="metric-card balance"><div><span>Receita usada no cálculo</span><strong id="commissionBaseMetric">R$ 0,00</strong><small>Somente receitas abrangidas pelas regras</small></div></article>
+          <article class="metric-card income"><div><span>Comissão calculada</span><strong id="commissionCalculatedMetric">R$ 0,00</strong><small>No período selecionado</small></div></article>
+          <article class="metric-card payable"><div><span>Valor pago</span><strong id="commissionPaidMetric">R$ 0,00</strong><small>Pagamentos registrados no mês</small></div></article>
+          <article class="metric-card expense"><div><span>Saldo pendente</span><strong id="commissionPendingMetric">R$ 0,00</strong><small>Calculado menos pagamentos</small></div></article>
+        </div>
+
+        <div class="commission-layout">
+          <article class="panel">
+            <div class="panel-header"><div><span class="panel-kicker">Cadastros</span><h2>Sócios da BRC</h2></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Sócio</th><th>Percentual padrão</th><th>Clientes</th><th>Situação</th><th></th></tr></thead><tbody id="partnersTable"></tbody></table></div>
+          </article>
+          <article class="panel">
+            <div class="panel-header"><div><span class="panel-kicker">Resumo mensal</span><h2>Comissões por sócio</h2></div><button class="button secondary" id="newCommissionPaymentButton">Registrar pagamento</button></div>
+            <div class="table-wrap"><table><thead><tr><th>Sócio</th><th>Base</th><th>Calculada</th><th>Paga</th><th>Pendente</th><th>Status</th></tr></thead><tbody id="partnerCommissionTable"></tbody></table></div>
+          </article>
+        </div>
+
+        <article class="panel commission-rules-panel">
+          <div class="panel-header"><div><span class="panel-kicker">Clientes indicados</span><h2>Regras de participação</h2></div><span class="ranking-rule">A soma dos percentuais ativos por cliente não pode ultrapassar 100%</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Sócio</th><th>Cliente</th><th>Percentual</th><th>Base</th><th>Recorrência</th><th>Vigência</th><th>Comissão no mês</th><th></th></tr></thead><tbody id="referralsTable"></tbody></table></div>
+        </article>
+
+        <article class="panel commission-payments-panel">
+          <div class="panel-header"><div><span class="panel-kicker">Prestação de contas</span><h2>Pagamentos registrados</h2></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Data</th><th>Sócio</th><th>Competência</th><th class="align-right">Valor</th><th>Observação</th><th></th></tr></thead><tbody id="commissionPaymentsTable"></tbody></table></div>
+        </article>
+      </section>
+
       <section class="view admin-only" id="usersView" hidden>
         <div class="users-header">
           <div><span class="panel-kicker">Administração</span><h2>Usuários do sistema</h2><p>Cadastre as pessoas que podem acessar o controle financeiro e defina o nível de permissão.</p></div>
@@ -383,6 +418,59 @@
       </div>
       <p class="form-error" id="userFormError" role="alert"></p>
       <div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog="userDialog">Cancelar</button><button class="button primary" type="submit" value="default">Salvar usuário</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="partnerDialog">
+    <form method="dialog" id="partnerForm" class="dialog-form">
+      <div class="dialog-header"><div><span class="panel-kicker">Participação societária da BRC</span><h2 id="partnerDialogTitle">Novo sócio</h2></div><button class="icon-button" type="button" data-close-dialog="partnerDialog" aria-label="Fechar">×</button></div>
+      <input type="hidden" name="id">
+      <div class="form-grid">
+        <label class="span-2">Nome completo *<input name="name" required maxlength="180"></label>
+        <label>CPF ou CNPJ<input name="tax_id" maxlength="18" placeholder="000.000.000-00"></label>
+        <label>Percentual padrão (%)<input name="default_percentage" inputmode="decimal" value="0" placeholder="Ex.: 10,00"><small>Poderá ser alterado para cada cliente indicado.</small></label>
+        <label>Telefone<input name="phone" maxlength="40"></label>
+        <label>E-mail<input name="email" type="email" maxlength="180"></label>
+        <label class="user-active-field span-2"><input type="checkbox" name="is_active" checked><span>Sócio ativo para novos cálculos</span></label>
+        <label class="span-2">Observações<textarea name="notes" rows="3" maxlength="1000"></textarea></label>
+      </div>
+      <p class="form-error" id="partnerFormError" role="alert"></p>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog="partnerDialog">Cancelar</button><button class="button primary" type="submit">Salvar sócio</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="referralDialog">
+    <form method="dialog" id="referralForm" class="dialog-form">
+      <div class="dialog-header"><div><span class="panel-kicker">Cliente indicado à BRC</span><h2 id="referralDialogTitle">Nova regra de participação</h2></div><button class="icon-button" type="button" data-close-dialog="referralDialog" aria-label="Fechar">×</button></div>
+      <input type="hidden" name="id">
+      <div class="form-grid">
+        <label>Sócio *<select name="partner_id" id="referralPartner" required><option value="">Selecione</option></select></label>
+        <label>Cliente indicado *<select name="client_id" id="referralClient" required><option value="">Selecione</option></select></label>
+        <label>Percentual da participação (%) *<input name="percentage" inputmode="decimal" required placeholder="Ex.: 10,00"></label>
+        <label>Base de cálculo *<select name="calculation_basis" required><option value="received">Somente valores recebidos</option><option value="invoiced">Valores faturados, ainda que pendentes</option></select></label>
+        <label>Recorrência *<select name="recurrence" required><option value="recurring">Todas as receitas do cliente</option><option value="first">Somente a primeira receita</option></select></label>
+        <label>Início da regra *<input type="date" name="start_date" required></label>
+        <label>Fim da regra<input type="date" name="end_date"><small>Deixe em branco enquanto a regra estiver vigente.</small></label>
+        <label class="user-active-field"><input type="checkbox" name="is_active" checked><span>Regra ativa</span></label>
+        <label class="span-2">Observações<textarea name="notes" rows="3" maxlength="1000"></textarea></label>
+      </div>
+      <p class="form-error" id="referralFormError" role="alert"></p>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog="referralDialog">Cancelar</button><button class="button primary" type="submit">Salvar regra</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="commissionPaymentDialog">
+    <form method="dialog" id="commissionPaymentForm" class="dialog-form">
+      <div class="dialog-header"><div><span class="panel-kicker">Baixa de comissão da BRC</span><h2>Registrar pagamento</h2></div><button class="icon-button" type="button" data-close-dialog="commissionPaymentDialog" aria-label="Fechar">×</button></div>
+      <div class="form-grid">
+        <label class="span-2">Sócio *<select name="partner_id" id="commissionPaymentPartner" required><option value="">Selecione</option></select></label>
+        <label>Competência *<input type="month" name="month" required></label>
+        <label>Valor pago (R$) *<input name="amount" inputmode="decimal" required placeholder="0,00"></label>
+        <label>Data do pagamento *<input type="date" name="paid_date" required></label>
+        <label class="span-2">Observação<textarea name="notes" rows="3" maxlength="1000" placeholder="Ex.: transferência bancária"></textarea></label>
+      </div>
+      <p class="form-error" id="commissionPaymentFormError" role="alert"></p>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog="commissionPaymentDialog">Cancelar</button><button class="button primary" type="submit">Registrar pagamento</button></div>
     </form>
   </dialog>
 

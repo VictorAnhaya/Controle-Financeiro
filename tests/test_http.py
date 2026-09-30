@@ -56,6 +56,7 @@ class HttpApplicationTests(unittest.TestCase):
             metadata = json.load(response)
         companies = {item["slug"]: item["id"] for item in metadata["companies"]}
         self.brc_id = companies["brc"]
+        self.client_id = metadata["clients"][0]["id"]
 
     def tearDown(self) -> None:
         self.server.shutdown()
@@ -73,6 +74,8 @@ class HttpApplicationTests(unittest.TestCase):
         self.assertIn("Bolotti Finance", html)
         self.assertIn('class="view admin-only" id="usersView" hidden', html)
         self.assertIn('class="view admin-only" id="companiesView" hidden', html)
+        self.assertIn('class="view admin-only" id="commissionsView" hidden', html)
+        self.assertIn('data-view="commissions"', html)
         self.assertIn('id="clientMonthFilter"', html)
         self.assertIn('data-close-dialog="transactionDialog"', html)
 
@@ -106,6 +109,44 @@ class HttpApplicationTests(unittest.TestCase):
         with self.opener.open(request) as response:
             payload = json.load(response)
         self.assertEqual(payload["amount_cents"], 49_990)
+
+    def test_brc_commissions_can_be_configured_through_admin_api(self) -> None:
+        partner_request = Request(
+            f"{self.base_url}/api/partners",
+            data=json.dumps(
+                {"name": "Sócio API", "default_percentage": "12,5", "is_active": True}
+            ).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.opener.open(partner_request) as response:
+            partner = json.load(response)
+        self.assertEqual(partner["default_percentage_basis_points"], 1250)
+
+        referral_request = Request(
+            f"{self.base_url}/api/referrals",
+            data=json.dumps(
+                {
+                    "partner_id": partner["id"],
+                    "client_id": self.client_id,
+                    "percentage": "12,5",
+                    "calculation_basis": "received",
+                    "recurrence": "recurring",
+                    "start_date": "2026-08-01",
+                    "is_active": True,
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.opener.open(referral_request) as response:
+            referral = json.load(response)
+        self.assertEqual(referral["partner_id"], partner["id"])
+
+        with self.opener.open(f"{self.base_url}/api/commissions?month=2026-08") as response:
+            dashboard = json.load(response)
+        self.assertEqual(len(dashboard["partners"]), 1)
+        self.assertEqual(len(dashboard["referrals"]), 1)
 
     def test_clients_and_goals_are_available_through_api(self) -> None:
         with self.opener.open(f"{self.base_url}/api/clients?month=2026-08") as response:
@@ -325,6 +366,9 @@ class HttpAuthenticationTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as forbidden_companies:
             user_opener.open(f"{self.base_url}/api/companies")
         self.assertEqual(forbidden_companies.exception.code, 403)
+        with self.assertRaises(HTTPError) as forbidden_commissions:
+            user_opener.open(f"{self.base_url}/api/commissions?month=2026-09")
+        self.assertEqual(forbidden_commissions.exception.code, 403)
 
         forbidden_delete = Request(
             f"{self.base_url}/api/companies/{company['id']}", method="DELETE"

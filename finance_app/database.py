@@ -177,6 +177,55 @@ class Database:
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS partners (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    company_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    tax_id TEXT,
+                    email TEXT,
+                    phone TEXT,
+                    default_percentage_basis_points INTEGER NOT NULL DEFAULT 0
+                        CHECK (default_percentage_basis_points BETWEEN 0 AND 10000),
+                    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    UNIQUE(company_id, name),
+                    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE RESTRICT
+                );
+
+                CREATE TABLE IF NOT EXISTS partner_referrals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    partner_id INTEGER NOT NULL,
+                    client_id INTEGER NOT NULL,
+                    percentage_basis_points INTEGER NOT NULL
+                        CHECK (percentage_basis_points > 0 AND percentage_basis_points <= 10000),
+                    calculation_basis TEXT NOT NULL
+                        CHECK (calculation_basis IN ('received', 'invoiced')),
+                    recurrence TEXT NOT NULL
+                        CHECK (recurrence IN ('recurring', 'first')),
+                    start_date TEXT NOT NULL,
+                    end_date TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    UNIQUE(partner_id, client_id),
+                    FOREIGN KEY (partner_id) REFERENCES partners(id) ON DELETE CASCADE,
+                    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE RESTRICT
+                );
+
+                CREATE TABLE IF NOT EXISTS commission_payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    partner_id INTEGER NOT NULL,
+                    month TEXT NOT NULL,
+                    amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+                    paid_date TEXT NOT NULL,
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    FOREIGN KEY (partner_id) REFERENCES partners(id) ON DELETE RESTRICT
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_transactions_date
                     ON transactions(transaction_date);
                 CREATE INDEX IF NOT EXISTS idx_transactions_kind_status
@@ -201,6 +250,14 @@ class Database:
                     ON sessions(user_id);
                 CREATE INDEX IF NOT EXISTS idx_sessions_expiration
                     ON sessions(expires_at);
+                CREATE INDEX IF NOT EXISTS idx_partners_company
+                    ON partners(company_id, is_active);
+                CREATE INDEX IF NOT EXISTS idx_partner_referrals_partner
+                    ON partner_referrals(partner_id, is_active);
+                CREATE INDEX IF NOT EXISTS idx_partner_referrals_client
+                    ON partner_referrals(client_id, is_active);
+                CREATE INDEX IF NOT EXISTS idx_commission_payments_partner_month
+                    ON commission_payments(partner_id, month);
                 """
             )
             self._ensure_column(connection, "transactions", "counterparty_tax_id", "TEXT")

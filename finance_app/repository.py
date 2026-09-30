@@ -53,6 +53,14 @@ class FinanceRepository:
             ).fetchone()
         return self._as_dict(row)
 
+    def get_company_by_slug(self, slug: str) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT id, name, slug, municipality FROM companies WHERE slug = ? AND is_active = 1",
+                (slug,),
+            ).fetchone()
+        return self._as_dict(row)
+
     def create_company(self, name: str, slug: str, municipality: str | None) -> dict[str, Any] | None:
         try:
             with self.database.connection() as connection:
@@ -76,9 +84,10 @@ class FinanceRepository:
                     (SELECT COUNT(*) FROM transactions WHERE company_id = ?) AS transactions,
                     (SELECT COUNT(*) FROM fiscal_documents WHERE company_id = ?) AS documents,
                     (SELECT COUNT(*) FROM company_goals WHERE company_id = ?) AS goals,
-                    (SELECT COUNT(*) FROM company_budgets WHERE company_id = ?) AS budgets
+                    (SELECT COUNT(*) FROM company_budgets WHERE company_id = ?) AS budgets,
+                    (SELECT COUNT(*) FROM partners WHERE company_id = ?) AS partners
                 """,
-                (company_id, company_id, company_id, company_id),
+                (company_id, company_id, company_id, company_id, company_id),
             ).fetchone()
             counts = {key: int(usage[key]) for key in usage.keys()}
             if any(counts.values()):
@@ -786,6 +795,231 @@ class FinanceRepository:
         with self.database.connection() as connection:
             cursor = connection.execute(
                 "DELETE FROM fiscal_documents WHERE id = ?", (document_id,)
+            )
+        return cursor.rowcount == 1
+
+    def list_partners(self, company_id: int) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT p.*,
+                       COUNT(DISTINCT r.id) AS referral_count,
+                       COUNT(DISTINCT pay.id) AS payment_count
+                  FROM partners p
+                  LEFT JOIN partner_referrals r ON r.partner_id = p.id
+                  LEFT JOIN commission_payments pay ON pay.partner_id = p.id
+                 WHERE p.company_id = ?
+                 GROUP BY p.id
+                 ORDER BY p.is_active DESC, p.name COLLATE NOCASE
+                """,
+                (company_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_partner(self, partner_id: int) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute("SELECT * FROM partners WHERE id = ?", (partner_id,)).fetchone()
+        return self._as_dict(row)
+
+    def create_partner(self, values: dict[str, Any]) -> dict[str, Any]:
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"INSERT INTO partners ({columns}) VALUES ({placeholders})", tuple(values.values())
+            )
+            row = connection.execute(
+                "SELECT * FROM partners WHERE id = ?", (int(cursor.lastrowid),)
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def update_partner(self, partner_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
+        assignments = ", ".join(f"{column} = ?" for column in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE partners SET {assignments},
+                       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?
+                """,
+                (*values.values(), partner_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_partner(partner_id)
+
+    def delete_partner(self, partner_id: int) -> tuple[bool, dict[str, int]]:
+        with self.database.connection() as connection:
+            usage = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM partner_referrals WHERE partner_id = ?) AS referrals,
+                    (SELECT COUNT(*) FROM commission_payments WHERE partner_id = ?) AS payments
+                """,
+                (partner_id, partner_id),
+            ).fetchone()
+            counts = {key: int(usage[key]) for key in usage.keys()}
+            if any(counts.values()):
+                return False, counts
+            cursor = connection.execute("DELETE FROM partners WHERE id = ?", (partner_id,))
+        return cursor.rowcount == 1, counts
+
+    def list_referrals(self, company_id: int) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT r.*, p.name AS partner_name, p.company_id,
+                       c.name AS client_name, c.tax_id AS client_tax_id
+                  FROM partner_referrals r
+                  JOIN partners p ON p.id = r.partner_id
+                  JOIN clients c ON c.id = r.client_id
+                 WHERE p.company_id = ?
+                 ORDER BY r.is_active DESC, p.name COLLATE NOCASE, c.name COLLATE NOCASE
+                """,
+                (company_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_referral(self, referral_id: int) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT r.*, p.company_id, p.name AS partner_name, c.name AS client_name
+                  FROM partner_referrals r
+                  JOIN partners p ON p.id = r.partner_id
+                  JOIN clients c ON c.id = r.client_id
+                 WHERE r.id = ?
+                """,
+                (referral_id,),
+            ).fetchone()
+        return self._as_dict(row)
+
+    def referral_percentage_sum(self, client_id: int, exclude_id: int | None = None) -> int:
+        clause = "AND id != ?" if exclude_id is not None else ""
+        parameters: tuple[Any, ...] = (client_id, exclude_id) if exclude_id is not None else (client_id,)
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                SELECT COALESCE(SUM(percentage_basis_points), 0) AS total
+                  FROM partner_referrals
+                 WHERE client_id = ? AND is_active = 1 {clause}
+                """,
+                parameters,
+            ).fetchone()
+        return int(row["total"])
+
+    def create_referral(self, values: dict[str, Any]) -> dict[str, Any]:
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"INSERT INTO partner_referrals ({columns}) VALUES ({placeholders})",
+                tuple(values.values()),
+            )
+            referral_id = int(cursor.lastrowid)
+        created = self.get_referral(referral_id)
+        assert created is not None
+        return created
+
+    def update_referral(self, referral_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
+        assignments = ", ".join(f"{column} = ?" for column in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE partner_referrals SET {assignments},
+                       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?
+                """,
+                (*values.values(), referral_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_referral(referral_id)
+
+    def delete_referral(self, referral_id: int) -> bool:
+        with self.database.connection() as connection:
+            cursor = connection.execute("DELETE FROM partner_referrals WHERE id = ?", (referral_id,))
+        return cursor.rowcount == 1
+
+    def commission_base(self, referral: dict[str, Any], month: str) -> dict[str, int]:
+        status_clause = "status = 'paid'" if referral["calculation_basis"] == "received" else "status != 'cancelled'"
+        parameters: list[Any] = [
+            referral["client_id"],
+            referral["company_id"],
+            referral["start_date"],
+        ]
+        end_clause = ""
+        if referral.get("end_date"):
+            end_clause = "AND transaction_date <= ?"
+            parameters.append(referral["end_date"])
+        base_query = f"""
+            SELECT id, amount_cents, transaction_date
+              FROM transactions
+             WHERE client_id = ? AND company_id = ? AND kind = 'income'
+               AND {status_clause} AND transaction_date >= ? {end_clause}
+        """
+        with self.database.connection() as connection:
+            if referral["recurrence"] == "first":
+                row = connection.execute(
+                    base_query + " ORDER BY transaction_date, id LIMIT 1", parameters
+                ).fetchone()
+                if row is None or not str(row["transaction_date"]).startswith(month):
+                    return {"base_cents": 0, "transaction_count": 0}
+                return {"base_cents": int(row["amount_cents"]), "transaction_count": 1}
+            rows = connection.execute(
+                base_query + " AND substr(transaction_date, 1, 7) = ?",
+                (*parameters, month),
+            ).fetchall()
+        return {
+            "base_cents": sum(int(row["amount_cents"]) for row in rows),
+            "transaction_count": len(rows),
+        }
+
+    def list_commission_payments(self, company_id: int, month: str) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT pay.*, p.name AS partner_name
+                  FROM commission_payments pay
+                  JOIN partners p ON p.id = pay.partner_id
+                 WHERE p.company_id = ? AND pay.month = ?
+                 ORDER BY pay.paid_date DESC, pay.id DESC
+                """,
+                (company_id, month),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_commission_payment(self, values: dict[str, Any]) -> dict[str, Any]:
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"INSERT INTO commission_payments ({columns}) VALUES ({placeholders})",
+                tuple(values.values()),
+            )
+            row = connection.execute(
+                """
+                SELECT pay.*, p.name AS partner_name
+                  FROM commission_payments pay
+                  JOIN partners p ON p.id = pay.partner_id
+                 WHERE pay.id = ?
+                """,
+                (int(cursor.lastrowid),),
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def delete_commission_payment(self, payment_id: int, company_id: int) -> bool:
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM commission_payments
+                 WHERE id = ? AND partner_id IN (
+                       SELECT id FROM partners WHERE company_id = ?
+                 )
+                """,
+                (payment_id, company_id),
             )
         return cursor.rowcount == 1
 

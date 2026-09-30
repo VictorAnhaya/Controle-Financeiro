@@ -42,7 +42,7 @@ body.authenticated .auth-screen { display: none; }
 .brand strong, .brand span { display: block; }
 .brand strong { font-size: 15px; }
 .brand span { color: #9da9bc; font-size: 11px; margin-top: 3px; }
-.nav { display: grid; gap: 7px; margin-top: 26px; }
+.nav { display: grid; gap: 7px; margin-top: 26px; overflow-y: auto; padding-right: 3px; }
 .nav-item { width: 100%; border: 0; color: #aeb8ca; background: transparent; padding: 12px 14px; border-radius: 10px; display: flex; align-items: center; gap: 12px; text-align: left; font-weight: 650; transition: .18s ease; }
 .nav-item span { width: 22px; font-size: 18px; text-align: center; }
 .nav-item:hover { color: #fff; background: rgba(255,255,255,.06); }
@@ -161,6 +161,12 @@ tbody tr:last-child td { border-bottom: 0; }
 .client-filters { grid-template-columns: minmax(240px, 1fr) minmax(155px, .35fr) minmax(145px, .3fr) auto; }
 .clients-table .table-note { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
 .companies-table td { padding-top: 15px; padding-bottom: 15px; }
+.commission-header-actions { display: flex; gap: 9px; }
+.commission-metrics { margin-bottom: 16px; }
+.commission-layout { display: grid; grid-template-columns: minmax(330px, .8fr) minmax(0, 1.2fr); gap: 16px; margin-bottom: 16px; align-items: start; }
+.commission-rules-panel, .commission-payments-panel { margin-bottom: 16px; }
+.muted-row { opacity: .58; background: #f8f9fb; }
+.table-note { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; font-weight: 500; }
 .income-client-field[hidden] { display: none; }
 .goals-layout { display: grid; grid-template-columns: minmax(280px, .55fr) minmax(0, 1.45fr); gap: 16px; align-items: start; }
 .goals-content { display: grid; gap: 16px; min-width: 0; }
@@ -186,11 +192,11 @@ dialog::backdrop { background: rgba(9,16,29,.58); backdrop-filter: blur(3px); }
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 1fr; }.sidebar { position: fixed; left: -260px; width: 248px; transition: .2s ease; box-shadow: 12px 0 35px rgba(7,14,27,.3); }.sidebar.open { left: 0; }
   .main { padding: 0 18px 36px; }.menu-button { display: inline-grid; place-items: center; }.topbar { flex-wrap: wrap; padding: 18px 0; }.topbar-actions { width: 100%; overflow-x: auto; padding-bottom: 4px; }
-  .dashboard-grid, .dashboard-grid.lower, .two-column, .documents-layout, .goals-layout { grid-template-columns: 1fr; }.budget-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-grid, .dashboard-grid.lower, .two-column, .documents-layout, .goals-layout, .commission-layout { grid-template-columns: 1fr; }.budget-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ranking-header, .users-header { align-items: flex-start; flex-direction: column; }.ranking-controls { width: 100%; }.ranking-controls label { flex: 1; }.ranking-controls input, .ranking-controls select { width: 100%; min-width: 0; }
 }
 @media (max-width: 620px) {
   .main { padding-inline: 12px; }.topbar h1 { font-size: 21px; }.topbar-actions { align-items: end; }.topbar-actions .button { padding: 0 11px; }.month-control input { width: 138px; }
   .metric-grid, .budget-cards, .insights-grid, .ranking-podium, .goal-metrics, .company-comparison-grid { grid-template-columns: 1fr; }.metric-card { padding: 16px; }.panel { padding: 16px; }.filter-bar { grid-template-columns: 1fr; }.report-hero { align-items: flex-start; flex-direction: column; }.form-grid { grid-template-columns: 1fr; }.form-grid .span-2 { grid-column: span 1; }.dialog-form { padding: 18px; }.ranking-controls { flex-direction: column; align-items: stretch; }.goal-progress-item { grid-template-columns: 1fr auto; }.goal-progress-item .progress { grid-column: 1 / -1; grid-row: 2; }.company-card-metrics { grid-template-columns: 1fr 1fr; }
-  .auth-screen { padding: 12px; }.auth-card { padding: 22px; }.category-panel { min-height: 390px; }.transactions-table th:nth-child(4), .transactions-table td:nth-child(4) { display: none; }.document-parties { grid-template-columns: 1fr; }.user-active-field { grid-column: span 1; }.company-control select { min-width: 155px; }
+  .auth-screen { padding: 12px; }.auth-card { padding: 22px; }.category-panel { min-height: 390px; }.transactions-table th:nth-child(4), .transactions-table td:nth-child(4) { display: none; }.document-parties { grid-template-columns: 1fr; }.user-active-field { grid-column: span 1; }.company-control select { min-width: 155px; }.commission-header-actions { width: 100%; flex-direction: column; }.commission-header-actions .button { width: 100%; }
 }

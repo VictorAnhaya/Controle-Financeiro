@@ -457,6 +457,81 @@ class FinanceServiceTests(unittest.TestCase):
         self.assertEqual(dict(goal), {"company_id": brc_id, "scope_key": f"company:{brc_id}"})
         self.assertEqual(dict(budget), {"company_id": brc_id, "scope_key": f"company:{brc_id}"})
 
+    def test_brc_partner_commissions_are_configurable_and_exclude_wbk(self) -> None:
+        client = self.service.create_client(
+            {"name": "Cliente Indicado Ltda", "tax_id": "12345678000190", "status": "active"}
+        )
+        partner = self.service.create_partner(
+            {"name": "Sócio Indicador", "default_percentage": "10,00", "is_active": True}
+        )
+        rule = self.service.create_referral(
+            {
+                "partner_id": partner["id"],
+                "client_id": client["id"],
+                "percentage": "10,00",
+                "calculation_basis": "received",
+                "recurrence": "recurring",
+                "start_date": "2026-09-01",
+                "is_active": True,
+            }
+        )
+        self.assertEqual(rule["percentage_basis_points"], 1000)
+
+        for amount, company_id in (
+            ("1.000,00", self.brc_id),
+            ("500,00", self.brc_id),
+            ("9.000,00", self.wbk_id),
+        ):
+            self.service.create_transaction(
+                {
+                    "kind": "income",
+                    "description": "Honorários do cliente indicado",
+                    "amount": amount,
+                    "transaction_date": "2026-09-15",
+                    "status": "paid",
+                    "category": "Honorários e serviços",
+                    "client_id": client["id"],
+                    "company_id": company_id,
+                }
+            )
+
+        dashboard = self.service.commission_dashboard("2026-09")
+        self.assertEqual(dashboard["summary"]["base_cents"], 150_000)
+        self.assertEqual(dashboard["summary"]["commission_cents"], 15_000)
+        self.assertEqual(dashboard["summary"]["pending_cents"], 15_000)
+
+        payment = self.service.create_commission_payment(
+            {
+                "partner_id": partner["id"],
+                "month": "2026-09",
+                "amount": "50,00",
+                "paid_date": "2026-09-30",
+            }
+        )
+        dashboard = self.service.commission_dashboard("2026-09")
+        self.assertEqual(dashboard["summary"]["paid_cents"], 5_000)
+        self.assertEqual(dashboard["summary"]["pending_cents"], 10_000)
+
+        second_partner = self.service.create_partner(
+            {"name": "Outro Sócio", "default_percentage": "0", "is_active": True}
+        )
+        with self.assertRaises(ValidationError):
+            self.service.create_referral(
+                {
+                    "partner_id": second_partner["id"],
+                    "client_id": client["id"],
+                    "percentage": "95,00",
+                    "calculation_basis": "received",
+                    "recurrence": "recurring",
+                    "start_date": "2026-09-01",
+                    "is_active": True,
+                }
+            )
+
+        self.assertTrue(self.service.delete_commission_payment(payment["id"]))
+        self.assertTrue(self.service.delete_referral(rule["id"]))
+        self.assertTrue(self.service.delete_partner(partner["id"]))
+
     def test_xml_document_is_extracted_linked_and_deduplicated(self) -> None:
         xml_path = PROJECT_ROOT / "tests" / "fixtures" / "nfe_sample.xml"
         content = xml_path.read_bytes()

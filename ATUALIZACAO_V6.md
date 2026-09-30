@@ -1,4 +1,4 @@
-# Atualização V6.5 — BRC + WBK
+# Atualização V6.6 — Sócios e comissões da BRC
 
 Esta versão substitui os arquivos da versão anterior sem exigir a exclusão do banco de dados existente.
 
@@ -22,6 +22,12 @@ Esta versão substitui os arquivos da versão anterior sem exigir a exclusão do
 - exclusão de empresas pela aba administrativa, bloqueada quando há lançamentos, notas, metas ou orçamentos vinculados;
 - exclusão de notas fiscais e do arquivo anexado, sem apagar um lançamento financeiro já criado.
 - substituição automática da antiga empresa Bolotti Reis por BRC, preservando todos os dados vinculados;
+- nova aba administrativa **Sócios e comissões**, exibida somente quando a BRC está selecionada;
+- cadastro manual de sócios, clientes indicados, percentuais, vigência e forma de cálculo;
+- opções de cálculo sobre valores recebidos ou faturados e sobre a primeira receita ou todas as receitas;
+- resumo mensal por sócio, registro de pagamentos parciais e saldo pendente;
+- proteção para que a soma das participações de um cliente não ultrapasse 100%;
+- nenhuma regra de comissão é aplicada à WBK nesta versão.
 
 ## Como substituir
 

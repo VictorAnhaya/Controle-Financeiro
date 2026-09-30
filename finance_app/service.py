@@ -174,6 +174,7 @@ class FinanceService:
                 "documents": "nota(s) fiscal(is)",
                 "goals": "meta(s)",
                 "budgets": "orçamento(s)",
+                "partners": "sócio(s)",
             }
             details = ", ".join(
                 f"{count} {labels[key]}" for key, count in usage.items() if count
@@ -684,6 +685,252 @@ class FinanceService:
             self.repository.sync_clients_from_income()
             transaction = self.repository.get_transaction(transaction["id"]) or transaction
         return {"transaction": transaction, "document": self._public_document(updated_document)}
+
+    def _brc_company(self) -> dict[str, Any]:
+        company = self.repository.get_company_by_slug("brc")
+        if company is None:
+            raise ValidationError("A empresa BRC não está cadastrada.")
+        return company
+
+    @staticmethod
+    def _percentage_to_basis_points(value: Any, field: str, *, allow_zero: bool = False) -> int:
+        try:
+            normalized = str(value or "0").strip().replace("%", "").replace(",", ".")
+            percentage = Decimal(normalized).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValidationError("Confira o percentual informado.", {field: "Percentual inválido."}) from exc
+        if percentage < 0 or percentage > 100 or (not allow_zero and percentage == 0):
+            message = "Informe um percentual entre 0,01% e 100%."
+            if allow_zero:
+                message = "Informe um percentual entre 0% e 100%."
+            raise ValidationError("Confira o percentual informado.", {field: message})
+        return int(percentage * 100)
+
+    @staticmethod
+    def _basis_points_to_percentage(value: int) -> float:
+        return float(Decimal(value) / Decimal(100))
+
+    def _validated_partner(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = self._clean_text(payload.get("name"), required=True, max_length=180)
+        assert name
+        tax_id = re.sub(r"\D", "", str(payload.get("tax_id") or "")) or None
+        if tax_id and len(tax_id) not in {11, 14}:
+            raise ValidationError("Confira o CPF ou CNPJ do sócio.", {"tax_id": "Informe 11 ou 14 dígitos."})
+        email = self._clean_text(payload.get("email"), max_length=180)
+        if email and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            raise ValidationError("Confira o e-mail do sócio.", {"email": "Informe um e-mail válido."})
+        return {
+            "company_id": self._brc_company()["id"],
+            "name": name,
+            "tax_id": tax_id,
+            "email": email,
+            "phone": self._clean_text(payload.get("phone"), max_length=40),
+            "default_percentage_basis_points": self._percentage_to_basis_points(
+                payload.get("default_percentage", 0), "default_percentage", allow_zero=True
+            ),
+            "is_active": 1 if payload.get("is_active", True) in {True, 1, "1", "true", "on"} else 0,
+            "notes": self._clean_text(payload.get("notes"), max_length=1000),
+        }
+
+    def create_partner(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return self.repository.create_partner(self._validated_partner(payload))
+        except Exception as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise ValidationError("Já existe um sócio com esse nome na BRC.", {"name": "Sócio já cadastrado."}) from exc
+            raise
+
+    def update_partner(self, partner_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+        current = self.repository.get_partner(partner_id)
+        brc = self._brc_company()
+        if current is None or current["company_id"] != brc["id"]:
+            return None
+        try:
+            merged = {
+                **current,
+                "default_percentage": self._basis_points_to_percentage(
+                    current["default_percentage_basis_points"]
+                ),
+                **payload,
+            }
+            return self.repository.update_partner(partner_id, self._validated_partner(merged))
+        except Exception as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise ValidationError("Já existe um sócio com esse nome na BRC.", {"name": "Sócio já cadastrado."}) from exc
+            raise
+
+    def delete_partner(self, partner_id: int) -> bool:
+        partner = self.repository.get_partner(partner_id)
+        brc = self._brc_company()
+        if partner is None or partner["company_id"] != brc["id"]:
+            return False
+        deleted, usage = self.repository.delete_partner(partner_id)
+        if not deleted and any(usage.values()):
+            raise ValidationError(
+                "O sócio não pode ser excluído enquanto possuir indicações ou pagamentos. "
+                "Desative o cadastro para preservar o histórico."
+            )
+        return deleted
+
+    def _validated_referral(
+        self, payload: dict[str, Any], current_id: int | None = None
+    ) -> dict[str, Any]:
+        try:
+            partner_id = int(payload.get("partner_id"))
+            client_id = int(payload.get("client_id"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("Selecione o sócio e o cliente.") from exc
+        partner = self.repository.get_partner(partner_id)
+        brc = self._brc_company()
+        if partner is None or partner["company_id"] != brc["id"]:
+            raise ValidationError("Sócio da BRC não encontrado.", {"partner_id": "Selecione um sócio válido."})
+        if self.repository.get_client(client_id) is None:
+            raise ValidationError("Cliente não encontrado.", {"client_id": "Selecione um cliente válido."})
+        basis = str(payload.get("calculation_basis") or "received")
+        recurrence = str(payload.get("recurrence") or "recurring")
+        if basis not in {"received", "invoiced"}:
+            raise ValidationError("Base de cálculo inválida.")
+        if recurrence not in {"recurring", "first"}:
+            raise ValidationError("Regra de recorrência inválida.")
+        start_date = self._validate_date(payload.get("start_date"), "start_date", required=True)
+        end_date = self._validate_date(payload.get("end_date"), "end_date")
+        assert start_date
+        if end_date and end_date < start_date:
+            raise ValidationError("A data final não pode ser anterior à data inicial.", {"end_date": "Confira o período."})
+        percentage = self._percentage_to_basis_points(payload.get("percentage"), "percentage")
+        active = 1 if payload.get("is_active", True) in {True, 1, "1", "true", "on"} else 0
+        if active and self.repository.referral_percentage_sum(client_id, current_id) + percentage > 10000:
+            raise ValidationError(
+                "A soma das participações ativas deste cliente ultrapassa 100%.",
+                {"percentage": "Reduza o percentual ou desative outra regra do cliente."},
+            )
+        return {
+            "partner_id": partner_id,
+            "client_id": client_id,
+            "percentage_basis_points": percentage,
+            "calculation_basis": basis,
+            "recurrence": recurrence,
+            "start_date": start_date,
+            "end_date": end_date,
+            "is_active": active,
+            "notes": self._clean_text(payload.get("notes"), max_length=1000),
+        }
+
+    def create_referral(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return self.repository.create_referral(self._validated_referral(payload))
+        except Exception as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise ValidationError(
+                    "Este cliente já possui uma regra para o sócio selecionado.",
+                    {"client_id": "Edite a regra existente."},
+                ) from exc
+            raise
+
+    def update_referral(self, referral_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+        current = self.repository.get_referral(referral_id)
+        if current is None or current["company_id"] != self._brc_company()["id"]:
+            return None
+        merged = {
+            **current,
+            "percentage": self._basis_points_to_percentage(current["percentage_basis_points"]),
+            **payload,
+        }
+        return self.repository.update_referral(
+            referral_id, self._validated_referral(merged, referral_id)
+        )
+
+    def delete_referral(self, referral_id: int) -> bool:
+        current = self.repository.get_referral(referral_id)
+        if current is None or current["company_id"] != self._brc_company()["id"]:
+            return False
+        return self.repository.delete_referral(referral_id)
+
+    def commission_dashboard(self, month: str) -> dict[str, Any]:
+        resolved_month = self._validate_month(month)
+        brc = self._brc_company()
+        partners = self.repository.list_partners(brc["id"])
+        referrals = self.repository.list_referrals(brc["id"])
+        payments = self.repository.list_commission_payments(brc["id"], resolved_month)
+        paid_by_partner: dict[int, int] = {}
+        for payment in payments:
+            paid_by_partner[payment["partner_id"]] = paid_by_partner.get(payment["partner_id"], 0) + int(payment["amount_cents"])
+
+        totals_by_partner: dict[int, dict[str, Any]] = {
+            partner["id"]: {
+                "partner_id": partner["id"],
+                "partner_name": partner["name"],
+                "base_cents": 0,
+                "commission_cents": 0,
+                "paid_cents": paid_by_partner.get(partner["id"], 0),
+                "transaction_count": 0,
+                "active_referral_count": 0,
+            }
+            for partner in partners
+        }
+        enriched_referrals: list[dict[str, Any]] = []
+        active_partners = {partner["id"] for partner in partners if partner["is_active"]}
+        for referral in referrals:
+            base = {"base_cents": 0, "transaction_count": 0}
+            if referral["is_active"] and referral["partner_id"] in active_partners:
+                base = self.repository.commission_base(referral, resolved_month)
+            commission_cents = int(
+                (Decimal(base["base_cents"]) * Decimal(referral["percentage_basis_points"]) / Decimal(10000))
+                .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            )
+            enriched = dict(referral)
+            enriched.update(base)
+            enriched["percentage"] = self._basis_points_to_percentage(referral["percentage_basis_points"])
+            enriched["commission_cents"] = commission_cents
+            enriched_referrals.append(enriched)
+            partner_total = totals_by_partner[referral["partner_id"]]
+            partner_total["base_cents"] += int(base["base_cents"])
+            partner_total["commission_cents"] += commission_cents
+            partner_total["transaction_count"] += int(base["transaction_count"])
+            if referral["is_active"]:
+                partner_total["active_referral_count"] += 1
+
+        partner_totals = list(totals_by_partner.values())
+        for item in partner_totals:
+            item["pending_cents"] = max(item["commission_cents"] - item["paid_cents"], 0)
+            item["overpaid_cents"] = max(item["paid_cents"] - item["commission_cents"], 0)
+            item["status"] = "paid" if item["commission_cents"] and item["pending_cents"] == 0 else ("partial" if item["paid_cents"] else "pending")
+
+        return {
+            "company": brc,
+            "month": resolved_month,
+            "partners": partners,
+            "referrals": enriched_referrals,
+            "partner_totals": partner_totals,
+            "payments": payments,
+            "summary": {
+                "base_cents": sum(item["base_cents"] for item in partner_totals),
+                "commission_cents": sum(item["commission_cents"] for item in partner_totals),
+                "paid_cents": sum(item["paid_cents"] for item in partner_totals),
+                "pending_cents": sum(item["pending_cents"] for item in partner_totals),
+            },
+        }
+
+    def create_commission_payment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            partner_id = int(payload.get("partner_id"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("Selecione o sócio.") from exc
+        partner = self.repository.get_partner(partner_id)
+        if partner is None or partner["company_id"] != self._brc_company()["id"]:
+            raise ValidationError("Sócio da BRC não encontrado.")
+        return self.repository.create_commission_payment(
+            {
+                "partner_id": partner_id,
+                "month": self._validate_month(payload.get("month")),
+                "amount_cents": self._money_to_cents(payload.get("amount"), "amount"),
+                "paid_date": self._validate_date(payload.get("paid_date"), "paid_date", required=True),
+                "notes": self._clean_text(payload.get("notes"), max_length=1000),
+            }
+        )
+
+    def delete_commission_payment(self, payment_id: int) -> bool:
+        return self.repository.delete_commission_payment(payment_id, self._brc_company()["id"])
 
     def company_comparison(self, month: str) -> dict[str, Any]:
         return self.repository.company_comparison(self._validate_month(month))

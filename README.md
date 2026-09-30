@@ -1,4 +1,4 @@
-# Bolotti Finance — Versão 6.5
+# Bolotti Finance — Versão 6.6
 
 Aplicação de controle financeiro criada a partir do relatório de NFS-e do grupo. A base inicial contém as 25 notas ativas de agosto de 2026 (R$ 230.537,13) e as 4 notas canceladas (R$ 48.692,37), conciliadas com a planilha de origem e separadas entre as empresas BRC e WBK.
 
@@ -49,6 +49,13 @@ Aplicação de controle financeiro criada a partir do relatório de NFS-e do gru
 - aba de usuários exclusiva para administradores;
 - criação, edição, alteração de senha, ativação e desativação de usuários;
 - somente o administrador inicial possui acesso ao painel de usuários; contas criadas depois são sempre usuários comuns.
+- aba **Sócios e comissões** exclusiva da BRC e do administrador;
+- cadastro de sócios com percentual padrão, contato, situação e observações;
+- vínculo de cada cliente indicado ao sócio responsável, com percentual próprio;
+- cálculo sobre valores recebidos ou faturados, recorrente ou somente na primeira receita;
+- vigência configurável, pagamentos parciais e saldo pendente por sócio e mês;
+- bloqueio da soma de participações acima de 100% para o mesmo cliente;
+- receitas da WBK ficam fora do cálculo de comissões da BRC.
 
 ## Como executar no VS Code — Windows 11
 
@@ -82,6 +89,7 @@ python -m venv .venv
 - Ao criar um lançamento ou anexar uma nota fiscal individual, informe a empresa responsável.
 - Ao importar a planilha original no modo consolidado, o sistema separa automaticamente as linhas pelo município emissor.
 - As metas e os orçamentos seguem o filtro atual: podem ser cadastrados para o consolidado ou separadamente para cada empresa.
+- Para administrar participações, selecione **BRC** no topo e abra **Sócios e comissões**. A aba não aparece na WBK e é restrita ao administrador.
 
 O comando acima instala também os recursos de Excel, PDF e imagem.
 
@@ -148,7 +156,8 @@ O arquivo `start.sh` desta versão inicia diretamente o `run.py`. O projeto não
 6. Na tela de primeiro acesso, cadastre o administrador.
 7. Entre na aba **Usuários** para cadastrar os demais acessos sem precisar alterar variáveis no Render.
 8. As abas **Consolidado**, **Clientes** e **Metas e projeções** ficam disponíveis para os usuários autenticados. Os clientes das receitas já existentes são criados automaticamente na primeira inicialização desta versão.
-9. Na primeira abertura da versão 6.5, a antiga empresa Bolotti Reis é convertida automaticamente em BRC, mantendo lançamentos, documentos, metas e orçamentos. Os demais registros continuam separados entre BRC e WBK conforme o município registrado.
+9. Na primeira abertura da versão 6.6, a antiga empresa Bolotti Reis é convertida automaticamente em BRC, mantendo lançamentos, documentos, metas e orçamentos. Os demais registros continuam separados entre BRC e WBK conforme o município registrado.
+10. Para configurar participações, selecione **BRC** no filtro superior e use a aba **Sócios e comissões**. Nenhum sócio ou percentual é criado automaticamente.
 
 O Blueprint usa um serviço pago com disco persistente de 1 GB. Essa configuração é necessária porque o plano gratuito perde o banco SQLite e os documentos anexados quando o serviço reinicia. O Dockerfile também instala o Tesseract em português para manter a leitura OCR de imagens no servidor.
 
