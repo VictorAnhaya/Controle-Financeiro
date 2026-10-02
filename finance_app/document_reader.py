@@ -171,9 +171,9 @@ def _read_pdf(content: bytes) -> ParsedFiscalDocument:
     except Exception as exc:
         raise DocumentReadError("Não foi possível ler o PDF enviado.") from exc
     if len(text.strip()) < 30:
-        raise DocumentReadError(
-            "Este PDF parece ser apenas uma imagem. Envie a nota como PNG/JPG para usar o OCR."
-        )
+        return ParsedFiscalDocument(document_type="PDF", warnings=[
+            "Não foi possível extrair texto deste PDF. Preencha os campos manualmente; o arquivo será mantido."
+        ])
     return _read_document_text(text, "PDF")
 
 
@@ -244,19 +244,46 @@ def _read_document_text(raw_text: str, source: str) -> ParsedFiscalDocument:
     total_value = _match_first(
         [
             r"(?:VALOR TOTAL (?:DA NOTA|DA NFS-E|DA NF-E|DOS SERVI[CÇ]OS)|TOTAL DA (?:NOTA|NFS-E|NF-E)|VALOR L[IÍ]QUIDO)\s*[:\-]?\s*R?\$?\s*([\d.]+,\d{2})",
-            r"(?:VALOR DOS SERVI[CÇ]OS)\s*[:\-]?\s*R?\$?\s*([\d.]+,\d{2})",
+            r"(?:VALOR DA OPERA[CÇ][ÃA]O\s*/\s*SERVI[CÇ]O|VALOR DOS SERVI[CÇ]OS|VALOR DO SERVI[CÇ]O|VALOR L[IÍ]QUIDO DA NFS-E)\s*[:\-]?\s*R?\$?\s*([\d.]+,\d{2})",
         ],
         compact,
     )
-    access_key_match = re.search(r"\b(?:\d[ .-]?){44}\b", compact)
+    access_key_match = re.search(r"(?<!\d)(?:\d{50}|\d{44}|(?:\d[ .-]?){43}\d)(?!\d)", compact)
     access_key = re.sub(r"\D", "", access_key_match.group(0)) if access_key_match else None
+
+    # National DANFSe uses named sections; CNPJ order alone is unreliable.
+    issuer_tax_id = re.sub(r"\D", "", tax_ids[0]) if tax_ids else None
+    recipient_tax_id = re.sub(r"\D", "", tax_ids[1]) if len(tax_ids) > 1 else None
+    if "DANFSE" in upper or "PRESTADOR / FORNECEDOR" in upper:
+        def party(start: str, end: str) -> tuple[str | None, str | None]:
+            section = re.search(start + r"(.*?)(?:" + end + ")", compact, re.I | re.S)
+            if not section:
+                return None, None
+            block = section.group(1)
+            name = _match_first([r"NOME\s*/\s*NOME EMPRESARIAL\s*\n([^\n]+)"], block)
+            tax = re.search(r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b|\b\d{3}\.\d{3}\.\d{3}-\d{2}\b", block)
+            return name, re.sub(r"\D", "", tax.group(0)) if tax else None
+        issuer_name, issuer_tax_id = party(r"PRESTADOR\s*/\s*FORNECEDOR", r"TOMADOR\s*/\s*ADQUIRENTE|SERVI[CÇ]O PRESTADO|$")
+        recipient_name, recipient_tax_id = party(r"TOMADOR\s*/\s*ADQUIRENTE", r"DESTINAT[ÁA]RIO DA OPERA[CÇ][ÃA]O|INTERMEDI[ÁA]RIO|SERVI[CÇ]O PRESTADO|$")
+        date_value = _match_first([r"DATA E HORA DA EMISS[ÃA]O DA NFS-E\s*(\d{2}/\d{2}/\d{4})"], compact)
+        number = _match_first([r"N[ÚU]MERO DA NFS-E\s*(\d{1,20})"], compact)
+        total_value = _match_first([
+            r"VALOR DA OPERA[CÇ][ÃA]O\s*/\s*SERVI[CÇ]O\s*R?\$?\s*([\d.]+,\d{2})",
+            r"VALOR L[IÍ]QUIDO DA NFS-E\s*R?\$?\s*([\d.]+,\d{2})",
+        ], compact)
+    # Reject headings accidentally captured as company names.
+    def clean_party(value: str | None) -> str | None:
+        if value and re.search(r"SITUA[CÇ][ÃA]O DA|CNPJ|NOME /|DATA E HORA|^PRESTADOR$|^TOMADOR$", value, re.I):
+            return None
+        return value
+    issuer_name, recipient_name = clean_party(issuer_name), clean_party(recipient_name)
 
     field_confidence = {
         "document_number": 0.82 if number else 0,
         "issue_date": 0.88 if date_value else 0,
         "total_cents": 0.9 if total_value else 0,
         "issuer_name": 0.72 if issuer_name else 0,
-        "issuer_tax_id": 0.85 if tax_ids else 0,
+        "issuer_tax_id": 0.85 if issuer_tax_id else 0,
     }
     present = [score for score in field_confidence.values() if score]
     confidence = sum(present) / len(field_confidence)
@@ -266,9 +293,9 @@ def _read_document_text(raw_text: str, source: str) -> ParsedFiscalDocument:
     return ParsedFiscalDocument(
         document_type=document_type,
         issuer_name=issuer_name,
-        issuer_tax_id=re.sub(r"\D", "", tax_ids[0]) if tax_ids else None,
+        issuer_tax_id=issuer_tax_id,
         recipient_name=recipient_name,
-        recipient_tax_id=re.sub(r"\D", "", tax_ids[1]) if len(tax_ids) > 1 else None,
+        recipient_tax_id=recipient_tax_id,
         document_number=number,
         access_key=access_key,
         issue_date=_iso_date(date_value),
