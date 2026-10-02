@@ -318,6 +318,10 @@ class Database:
                    SET external_key = 'company:' || company_id || ':' || external_key
                  WHERE company_id IS NOT NULL AND external_key IS NOT NULL
                    AND external_key NOT LIKE 'company:%'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM transactions AS existing
+                        WHERE existing.external_key = 'company:' || transactions.company_id || ':' || transactions.external_key
+                   )
                 """
             )
             connection.execute(
