@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import json
 import re
+import unicodedata
 from datetime import date
 from typing import Any, Iterable
 
@@ -37,6 +38,84 @@ class FinanceRepository:
             ).fetchone()
         return self._as_dict(row)
 
+    def list_companies(self) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT id, name, slug, municipality FROM companies WHERE is_active = 1 ORDER BY id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_company(self, company_id: int) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT id, name, slug, municipality FROM companies WHERE id = ? AND is_active = 1",
+                (company_id,),
+            ).fetchone()
+        return self._as_dict(row)
+
+    def get_company_by_slug(self, slug: str) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT id, name, slug, municipality FROM companies WHERE slug = ? AND is_active = 1",
+                (slug,),
+            ).fetchone()
+        return self._as_dict(row)
+
+    def create_company(self, name: str, slug: str, municipality: str | None) -> dict[str, Any] | None:
+        try:
+            with self.database.connection() as connection:
+                cursor = connection.execute(
+                    "INSERT INTO companies (name, slug, municipality) VALUES (?, ?, ?)",
+                    (name, slug, municipality),
+                )
+                row = connection.execute(
+                    "SELECT id, name, slug, municipality FROM companies WHERE id = ?",
+                    (int(cursor.lastrowid),),
+                ).fetchone()
+        except sqlite3.IntegrityError:
+            return None
+        return self._as_dict(row)
+
+    def delete_company(self, company_id: int) -> tuple[bool, dict[str, int]]:
+        with self.database.connection() as connection:
+            usage = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM transactions WHERE company_id = ?) AS transactions,
+                    (SELECT COUNT(*) FROM fiscal_documents WHERE company_id = ?) AS documents,
+                    (SELECT COUNT(*) FROM company_goals WHERE company_id = ?) AS goals,
+                    (SELECT COUNT(*) FROM company_budgets WHERE company_id = ?) AS budgets,
+                    (SELECT COUNT(*) FROM partners WHERE company_id = ?) AS partners
+                """,
+                (company_id, company_id, company_id, company_id, company_id),
+            ).fetchone()
+            counts = {key: int(usage[key]) for key in usage.keys()}
+            if any(counts.values()):
+                return False, counts
+            cursor = connection.execute("DELETE FROM companies WHERE id = ?", (company_id,))
+        return cursor.rowcount == 1, counts
+
+    def backfill_companies_by_municipality(self) -> int:
+        with self.database.connection() as connection:
+            brc = connection.execute(
+                "SELECT id FROM companies WHERE slug = 'brc'"
+            ).fetchone()
+            wbk = connection.execute("SELECT id FROM companies WHERE slug = 'wbk'").fetchone()
+            assert brc is not None and wbk is not None
+            first = connection.execute(
+                """
+                UPDATE transactions SET company_id = ?
+                 WHERE company_id IS NULL
+                   AND (notes LIKE '%São José dos Pinhais%' OR notes LIKE '%Sao Jose dos Pinhais%')
+                """,
+                (brc["id"],),
+            ).rowcount
+            second = connection.execute(
+                "UPDATE transactions SET company_id = ? WHERE company_id IS NULL AND notes LIKE '%Curitiba%'",
+                (wbk["id"],),
+            ).rowcount
+        return max(first, 0) + max(second, 0)
+
     def list_transactions(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
         clauses: list[str] = []
         parameters: list[Any] = []
@@ -53,6 +132,9 @@ class FinanceRepository:
         if filters.get("category"):
             clauses.append("category = ?")
             parameters.append(filters["category"])
+        if filters.get("company_id"):
+            clauses.append("company_id = ?")
+            parameters.append(filters["company_id"])
         if filters.get("search"):
             clauses.append(
                 "(description LIKE ? OR counterparty LIKE ? OR document_number LIKE ?)"
@@ -178,10 +260,286 @@ class FinanceRepository:
             cursor = connection.execute("DELETE FROM transactions WHERE id = ?", (transaction_id,))
         return cursor.rowcount == 1
 
-    def dashboard(self, month: str) -> dict[str, Any]:
+    @staticmethod
+    def client_match_key(name: str, tax_id: str | None = None) -> str:
+        digits = re.sub(r"\D", "", tax_id or "")
+        if digits:
+            return f"tax:{digits}"
+        normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+        normalized = re.sub(r"[^a-z0-9]+", " ", normalized.lower()).strip()
+        return f"name:{normalized}"
+
+    def sync_clients_from_income(self) -> int:
+        """Create/link client records from legacy income transactions."""
+        linked = 0
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT counterparty, counterparty_tax_id,
+                       MIN(transaction_date) AS acquisition_date
+                  FROM transactions
+                 WHERE kind = 'income'
+                   AND status != 'cancelled'
+                   AND counterparty IS NOT NULL
+                   AND trim(counterparty) != ''
+                 GROUP BY COALESCE(NULLIF(counterparty_tax_id, ''), lower(trim(counterparty)))
+                """
+            ).fetchall()
+            for row in rows:
+                name = str(row["counterparty"]).strip()
+                tax_id = re.sub(r"\D", "", row["counterparty_tax_id"] or "") or None
+                match_key = self.client_match_key(name, tax_id)
+                connection.execute(
+                    """
+                    INSERT INTO clients (name, tax_id, match_key, acquisition_date)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(match_key) DO UPDATE SET
+                        name = CASE WHEN clients.name = '' THEN excluded.name ELSE clients.name END,
+                        tax_id = COALESCE(clients.tax_id, excluded.tax_id),
+                        acquisition_date = CASE
+                            WHEN clients.acquisition_date IS NULL THEN excluded.acquisition_date
+                            WHEN excluded.acquisition_date < clients.acquisition_date THEN excluded.acquisition_date
+                            ELSE clients.acquisition_date
+                        END,
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    """,
+                    (name, tax_id, match_key, row["acquisition_date"]),
+                )
+                client = connection.execute(
+                    "SELECT id FROM clients WHERE match_key = ?", (match_key,)
+                ).fetchone()
+                assert client is not None
+                if tax_id:
+                    cursor = connection.execute(
+                        """
+                        UPDATE transactions SET client_id = ?
+                         WHERE kind = 'income' AND counterparty_tax_id = ?
+                           AND (client_id IS NULL OR client_id != ?)
+                        """,
+                        (client["id"], tax_id, client["id"]),
+                    )
+                else:
+                    cursor = connection.execute(
+                        """
+                        UPDATE transactions SET client_id = ?
+                         WHERE kind = 'income' AND lower(trim(counterparty)) = lower(trim(?))
+                           AND (client_id IS NULL OR client_id != ?)
+                        """,
+                        (client["id"], name, client["id"]),
+                    )
+                linked += max(cursor.rowcount, 0)
+        return linked
+
+    def get_client(self, client_id: int) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+        return self._as_dict(row)
+
+    def find_client_by_match_key(self, match_key: str) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM clients WHERE match_key = ?", (match_key,)
+            ).fetchone()
+        return self._as_dict(row)
+
+    def list_clients(
+        self, month: str, search: str = "", status: str = "", company_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = [month, month, month]
+        company_join = ""
+        if company_id is not None:
+            company_join = " AND t.company_id = ?"
+            parameters.append(company_id)
+        if search:
+            clauses.append("(c.name LIKE ? OR c.tax_id LIKE ? OR c.contact_name LIKE ? OR c.email LIKE ?)")
+            token = f"%{search}%"
+            parameters.extend([token, token, token, token])
+        if status:
+            clauses.append("c.status = ?")
+            parameters.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT c.*,
+                       COUNT(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' THEN 1 END) AS invoice_count,
+                       COALESCE(SUM(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' THEN t.amount_cents END), 0) AS total_revenue_cents,
+                       COUNT(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' AND substr(t.transaction_date, 1, 7) = ? THEN 1 END) AS month_invoice_count,
+                       COALESCE(SUM(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' AND substr(t.transaction_date, 1, 7) = ? THEN t.amount_cents END), 0) AS month_revenue_cents,
+                       MAX(CASE WHEN t.kind = 'income' AND t.status != 'cancelled' AND substr(t.transaction_date, 1, 7) = ? THEN t.transaction_date END) AS last_revenue_date
+                  FROM clients c
+                  LEFT JOIN transactions t ON t.client_id = c.id {company_join}
+                  {where}
+                 GROUP BY c.id
+                 HAVING month_invoice_count > 0
+                 ORDER BY c.status ASC, c.name COLLATE NOCASE ASC
+                """,
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def client_options(self) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT id, name, tax_id FROM clients WHERE status = 'active' ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def client_summary(self, month: str, company_id: int | None = None) -> dict[str, Any]:
+        company_clause = " AND t.company_id = ?" if company_id is not None else ""
+        transaction_parameters: list[Any] = [company_id] if company_id is not None else []
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                SELECT
+                    COUNT(DISTINCT CASE WHEN c.status = 'active' THEN c.id END) AS active_count,
+                    COUNT(DISTINCT CASE WHEN c.status = 'inactive' THEN c.id END) AS inactive_count
+                  FROM clients c
+                  JOIN transactions t ON t.client_id = c.id AND t.kind = 'income'
+                   AND t.status != 'cancelled'
+                   AND substr(t.transaction_date, 1, 7) = ? {company_clause}
+                """,
+                [month, *transaction_parameters],
+            ).fetchone()
+            revenue = connection.execute(
+                f"""
+                SELECT COALESCE(SUM(amount_cents), 0) AS revenue_cents
+                  FROM transactions t
+                 WHERE t.kind = 'income' AND t.status = 'paid'
+                   AND substr(t.transaction_date, 1, 7) = ? {company_clause}
+                """,
+                [month, *transaction_parameters],
+            ).fetchone()
+            new_clients = connection.execute(
+                f"""
+                SELECT COUNT(*) AS new_count FROM (
+                    SELECT t.client_id
+                      FROM transactions t
+                     WHERE t.kind = 'income' AND t.status != 'cancelled'
+                       AND t.client_id IS NOT NULL {company_clause}
+                     GROUP BY t.client_id
+                    HAVING substr(MIN(t.transaction_date), 1, 7) = ?
+                )
+                """,
+                [*transaction_parameters, month],
+            ).fetchone()
+        result = dict(row)
+        result["revenue_cents"] = int(revenue["revenue_cents"])
+        result["new_count"] = int(new_clients["new_count"])
+        return result
+
+    def create_client(self, values: dict[str, Any]) -> dict[str, Any]:
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"INSERT INTO clients ({columns}) VALUES ({placeholders})", tuple(values.values())
+            )
+            client_id = int(cursor.lastrowid)
+        created = self.get_client(client_id)
+        assert created is not None
+        return created
+
+    def update_client(self, client_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
+        assignments = ", ".join(f"{column} = ?" for column in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE clients SET {assignments},
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?
+                """,
+                [*values.values(), client_id],
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_client(client_id)
+
+    def relink_client_transactions(self, client_id: int, name: str, tax_id: str | None) -> None:
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                UPDATE transactions
+                   SET counterparty = ?, counterparty_tax_id = ?
+                 WHERE client_id = ? AND kind = 'income'
+                """,
+                (name, tax_id, client_id),
+            )
+
+    def upsert_goal(self, values: dict[str, Any]) -> dict[str, Any]:
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO company_goals
+                    (scope_key, company_id, month, revenue_target_cents, expense_limit_cents, new_clients_target, notes)
+                VALUES (:scope_key, :company_id, :month, :revenue_target_cents, :expense_limit_cents, :new_clients_target, :notes)
+                ON CONFLICT(scope_key, month) DO UPDATE SET
+                    revenue_target_cents = excluded.revenue_target_cents,
+                    expense_limit_cents = excluded.expense_limit_cents,
+                    new_clients_target = excluded.new_clients_target,
+                    notes = excluded.notes,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                """,
+                values,
+            )
+            row = connection.execute(
+                "SELECT * FROM company_goals WHERE scope_key = ? AND month = ?",
+                (values["scope_key"], values["month"]),
+            ).fetchone()
+        result = self._as_dict(row)
+        assert result is not None
+        return result
+
+    def get_goal(self, month: str, scope_key: str = "all") -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM company_goals WHERE scope_key = ? AND month = ?",
+                (scope_key, month),
+            ).fetchone()
+        return self._as_dict(row)
+
+    def month_actuals(self, month: str, company_id: int | None = None) -> dict[str, Any]:
+        company_clause = " AND company_id = ?" if company_id is not None else ""
+        parameters: list[Any] = [month]
+        if company_id is not None:
+            parameters.append(company_id)
         with self.database.connection() as connection:
             totals = connection.execute(
-                """
+                f"""
+                SELECT
+                    COALESCE(SUM(CASE WHEN kind = 'income' AND status = 'paid' THEN amount_cents END), 0) AS revenue_cents,
+                    COALESCE(SUM(CASE WHEN kind = 'expense' AND status = 'paid' THEN amount_cents END), 0) AS expense_cents,
+                    COUNT(CASE WHEN kind = 'income' AND status = 'paid' THEN 1 END) AS invoice_count,
+                    COALESCE(SUM(CASE WHEN kind = 'income' AND status = 'cancelled' THEN amount_cents END), 0) AS cancelled_cents,
+                    COUNT(CASE WHEN kind = 'income' AND status = 'cancelled' THEN 1 END) AS cancelled_count
+                  FROM transactions WHERE substr(transaction_date, 1, 7) = ? {company_clause}
+                """,
+                parameters,
+            ).fetchone()
+            clients = connection.execute(
+                f"""
+                SELECT COUNT(*) AS new_clients FROM (
+                    SELECT client_id FROM transactions
+                     WHERE kind = 'income' AND status != 'cancelled' AND client_id IS NOT NULL
+                       {company_clause}
+                     GROUP BY client_id
+                    HAVING substr(MIN(transaction_date), 1, 7) = ?
+                )
+                """,
+                [*(parameters[1:] if company_id is not None else []), month],
+            ).fetchone()
+        return {**dict(totals), **dict(clients)}
+
+    def dashboard(self, month: str, company_id: int | None = None) -> dict[str, Any]:
+        company_clause = " AND company_id = ?" if company_id is not None else ""
+        parameters: list[Any] = [month]
+        if company_id is not None:
+            parameters.append(company_id)
+        scope_key = f"company:{company_id}" if company_id is not None else "all"
+        with self.database.connection() as connection:
+            totals = connection.execute(
+                f"""
                 SELECT
                     COALESCE(SUM(CASE WHEN kind = 'income' AND status = 'paid' THEN amount_cents END), 0) AS income_cents,
                     COALESCE(SUM(CASE WHEN kind = 'expense' AND status = 'paid' THEN amount_cents END), 0) AS expense_cents,
@@ -191,54 +549,55 @@ class FinanceRepository:
                     COUNT(CASE WHEN kind = 'expense' AND status = 'paid' THEN 1 END) AS expense_count,
                     COUNT(CASE WHEN kind = 'expense' AND status = 'overdue' THEN 1 END) AS overdue_count
                 FROM transactions
-                WHERE substr(transaction_date, 1, 7) = ?
+                WHERE substr(transaction_date, 1, 7) = ? {company_clause}
                 """,
-                (month,),
+                parameters,
             ).fetchone()
 
             expenses_by_category = connection.execute(
-                """
+                f"""
                 SELECT category, SUM(amount_cents) AS amount_cents
                 FROM transactions
                 WHERE substr(transaction_date, 1, 7) = ?
                   AND kind = 'expense'
                   AND status = 'paid'
+                  {company_clause}
                 GROUP BY category
                 ORDER BY amount_cents DESC
                 """,
-                (month,),
+                parameters,
             ).fetchall()
 
             daily_flow = connection.execute(
-                """
+                f"""
                 SELECT transaction_date,
                        SUM(CASE WHEN kind = 'income' AND status = 'paid' THEN amount_cents ELSE 0 END) AS income_cents,
                        SUM(CASE WHEN kind = 'expense' AND status = 'paid' THEN amount_cents ELSE 0 END) AS expense_cents
                 FROM transactions
-                WHERE substr(transaction_date, 1, 7) = ?
+                WHERE substr(transaction_date, 1, 7) = ? {company_clause}
                 GROUP BY transaction_date
                 ORDER BY transaction_date
                 """,
-                (month,),
+                parameters,
             ).fetchall()
 
             budget = connection.execute(
                 """
                 SELECT COALESCE(SUM(limit_cents), 0) AS limit_cents
-                FROM budgets
-                WHERE month = ?
+                FROM company_budgets
+                WHERE scope_key = ? AND month = ?
                 """,
-                (month,),
+                (scope_key, month),
             ).fetchone()
 
             recent = connection.execute(
-                """
+                f"""
                 SELECT * FROM transactions
-                WHERE substr(transaction_date, 1, 7) = ?
+                WHERE substr(transaction_date, 1, 7) = ? {company_clause}
                 ORDER BY transaction_date DESC, id DESC
                 LIMIT 6
                 """,
-                (month,),
+                parameters,
             ).fetchall()
 
         return {
@@ -249,39 +608,54 @@ class FinanceRepository:
             "recent": [dict(row) for row in recent],
         }
 
-    def list_budgets(self, month: str) -> list[dict[str, Any]]:
+    def list_budgets(
+        self, month: str, scope_key: str = "all", company_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        company_join = " AND t.company_id = ?" if company_id is not None else ""
+        parameters: list[Any] = [scope_key, month]
+        if company_id is not None:
+            parameters.append(company_id)
         with self.database.connection() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT b.*,
                        COALESCE(SUM(CASE WHEN t.status = 'paid' THEN t.amount_cents END), 0) AS used_cents
-                  FROM budgets b
+                  FROM company_budgets b
                   LEFT JOIN transactions t
                     ON t.kind = 'expense'
                    AND t.category = b.category
                    AND substr(t.transaction_date, 1, 7) = b.month
-                 WHERE b.month = ?
+                   {company_join}
+                 WHERE b.scope_key = ? AND b.month = ?
                  GROUP BY b.id
                  ORDER BY b.category
                 """,
-                (month,),
+                [*parameters[2:], *parameters[:2]],
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def upsert_budget(self, month: str, category: str, limit_cents: int) -> dict[str, Any]:
+    def upsert_budget(
+        self,
+        month: str,
+        category: str,
+        limit_cents: int,
+        scope_key: str = "all",
+        company_id: int | None = None,
+    ) -> dict[str, Any]:
         with self.database.connection() as connection:
             connection.execute(
                 """
-                INSERT INTO budgets (month, category, limit_cents)
-                VALUES (?, ?, ?)
-                ON CONFLICT(month, category) DO UPDATE SET
+                INSERT INTO company_budgets (scope_key, company_id, month, category, limit_cents)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(scope_key, month, category) DO UPDATE SET
                     limit_cents = excluded.limit_cents,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                 """,
-                (month, category, limit_cents),
+                (scope_key, company_id, month, category, limit_cents),
             )
             row = connection.execute(
-                "SELECT * FROM budgets WHERE month = ? AND category = ?", (month, category)
+                "SELECT * FROM company_budgets WHERE scope_key = ? AND month = ? AND category = ?",
+                (scope_key, month, category),
             ).fetchone()
         result = self._as_dict(row)
         assert result is not None
@@ -298,10 +672,14 @@ class FinanceRepository:
             cost_centers = connection.execute(
                 "SELECT DISTINCT cost_center FROM transactions WHERE cost_center IS NOT NULL AND cost_center != '' ORDER BY cost_center"
             ).fetchall()
+            companies = connection.execute(
+                "SELECT id, name, slug, municipality FROM companies WHERE is_active = 1 ORDER BY id"
+            ).fetchall()
         return {
             "latest_month": latest["latest_month"],
             "categories": [row["category"] for row in categories],
             "cost_centers": [row["cost_center"] for row in cost_centers],
+            "companies": [dict(row) for row in companies],
         }
 
     def backfill_counterparty_tax_ids(self) -> int:
@@ -329,12 +707,17 @@ class FinanceRepository:
                 updated += 1
         return updated
 
-    def client_ranking(self, month: str | None = None) -> list[dict[str, Any]]:
+    def client_ranking(
+        self, month: str | None = None, company_id: int | None = None
+    ) -> list[dict[str, Any]]:
         clauses = ["kind = 'income'", "status != 'cancelled'", "counterparty IS NOT NULL", "trim(counterparty) != ''"]
         parameters: list[Any] = []
         if month:
             clauses.append("substr(transaction_date, 1, 7) = ?")
             parameters.append(month)
+        if company_id is not None:
+            clauses.append("company_id = ?")
+            parameters.append(company_id)
         where = " AND ".join(clauses)
         with self.database.connection() as connection:
             rows = connection.execute(
@@ -361,6 +744,17 @@ class FinanceRepository:
         document["extracted"] = json.loads(document.pop("extracted_json"))
         return document
 
+    def update_document_extraction(self, document_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"UPDATE fiscal_documents SET {assignments}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND transaction_id IS NULL",
+                (*values.values(), document_id),
+            )
+            if not cursor.rowcount:
+                return None
+        return self.get_document(document_id)
+
     def find_document_by_access_key(self, access_key: str) -> dict[str, Any] | None:
         with self.database.connection() as connection:
             row = connection.execute(
@@ -382,28 +776,23 @@ class FinanceRepository:
             ).fetchone()
         return self._document_dict(row) if row is not None else None
 
-    def list_documents(self, limit: int = 100) -> list[dict[str, Any]]:
+    def list_documents(
+        self, limit: int = 100, company_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        where = "WHERE company_id = ?" if company_id is not None else ""
+        parameters: list[Any] = [company_id] if company_id is not None else []
+        parameters.append(min(max(limit, 1), 500))
         with self.database.connection() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT * FROM fiscal_documents
+                {where}
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?
                 """,
-                (min(max(limit, 1), 500),),
+                parameters,
             ).fetchall()
         return [self._document_dict(row) for row in rows]
-
-    def update_document_extraction(self, document_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
-        assignments = ", ".join(f"{key} = ?" for key in values)
-        with self.database.connection() as connection:
-            cursor = connection.execute(
-                f"UPDATE fiscal_documents SET {assignments}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND transaction_id IS NULL",
-                (*values.values(), document_id),
-            )
-            if not cursor.rowcount:
-                return None
-        return self.get_document(document_id)
 
     def create_document(self, values: dict[str, Any]) -> dict[str, Any]:
         columns = ", ".join(values.keys())
@@ -419,3 +808,292 @@ class FinanceRepository:
             ).fetchone()
         assert row is not None
         return self._document_dict(row)
+
+    def delete_document(self, document_id: int) -> bool:
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                "DELETE FROM fiscal_documents WHERE id = ?", (document_id,)
+            )
+        return cursor.rowcount == 1
+
+    def list_partners(self, company_id: int) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT p.*,
+                       COUNT(DISTINCT r.id) AS referral_count,
+                       COUNT(DISTINCT pay.id) AS payment_count
+                  FROM partners p
+                  LEFT JOIN partner_referrals r ON r.partner_id = p.id
+                  LEFT JOIN commission_payments pay ON pay.partner_id = p.id
+                 WHERE p.company_id = ?
+                 GROUP BY p.id
+                 ORDER BY p.is_active DESC, p.name COLLATE NOCASE
+                """,
+                (company_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_partner(self, partner_id: int) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute("SELECT * FROM partners WHERE id = ?", (partner_id,)).fetchone()
+        return self._as_dict(row)
+
+    def create_partner(self, values: dict[str, Any]) -> dict[str, Any]:
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"INSERT INTO partners ({columns}) VALUES ({placeholders})", tuple(values.values())
+            )
+            row = connection.execute(
+                "SELECT * FROM partners WHERE id = ?", (int(cursor.lastrowid),)
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def update_partner(self, partner_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
+        assignments = ", ".join(f"{column} = ?" for column in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE partners SET {assignments},
+                       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?
+                """,
+                (*values.values(), partner_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_partner(partner_id)
+
+    def delete_partner(self, partner_id: int) -> tuple[bool, dict[str, int]]:
+        with self.database.connection() as connection:
+            usage = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM partner_referrals WHERE partner_id = ?) AS referrals,
+                    (SELECT COUNT(*) FROM commission_payments WHERE partner_id = ?) AS payments
+                """,
+                (partner_id, partner_id),
+            ).fetchone()
+            counts = {key: int(usage[key]) for key in usage.keys()}
+            if any(counts.values()):
+                return False, counts
+            cursor = connection.execute("DELETE FROM partners WHERE id = ?", (partner_id,))
+        return cursor.rowcount == 1, counts
+
+    def list_referrals(self, company_id: int) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT r.*, p.name AS partner_name, p.company_id,
+                       c.name AS client_name, c.tax_id AS client_tax_id
+                  FROM partner_referrals r
+                  JOIN partners p ON p.id = r.partner_id
+                  JOIN clients c ON c.id = r.client_id
+                 WHERE p.company_id = ?
+                 ORDER BY r.is_active DESC, p.name COLLATE NOCASE, c.name COLLATE NOCASE
+                """,
+                (company_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_referral(self, referral_id: int) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT r.*, p.company_id, p.name AS partner_name, c.name AS client_name
+                  FROM partner_referrals r
+                  JOIN partners p ON p.id = r.partner_id
+                  JOIN clients c ON c.id = r.client_id
+                 WHERE r.id = ?
+                """,
+                (referral_id,),
+            ).fetchone()
+        return self._as_dict(row)
+
+    def referral_percentage_sum(self, client_id: int, exclude_id: int | None = None) -> int:
+        clause = "AND id != ?" if exclude_id is not None else ""
+        parameters: tuple[Any, ...] = (client_id, exclude_id) if exclude_id is not None else (client_id,)
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                SELECT COALESCE(SUM(percentage_basis_points), 0) AS total
+                  FROM partner_referrals
+                 WHERE client_id = ? AND is_active = 1 {clause}
+                """,
+                parameters,
+            ).fetchone()
+        return int(row["total"])
+
+    def create_referral(self, values: dict[str, Any]) -> dict[str, Any]:
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"INSERT INTO partner_referrals ({columns}) VALUES ({placeholders})",
+                tuple(values.values()),
+            )
+            referral_id = int(cursor.lastrowid)
+        created = self.get_referral(referral_id)
+        assert created is not None
+        return created
+
+    def update_referral(self, referral_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
+        assignments = ", ".join(f"{column} = ?" for column in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE partner_referrals SET {assignments},
+                       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?
+                """,
+                (*values.values(), referral_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_referral(referral_id)
+
+    def delete_referral(self, referral_id: int) -> bool:
+        with self.database.connection() as connection:
+            cursor = connection.execute("DELETE FROM partner_referrals WHERE id = ?", (referral_id,))
+        return cursor.rowcount == 1
+
+    def commission_base(self, referral: dict[str, Any], month: str) -> dict[str, int]:
+        status_clause = "status = 'paid'" if referral["calculation_basis"] == "received" else "status != 'cancelled'"
+        parameters: list[Any] = [
+            referral["client_id"],
+            referral["company_id"],
+            referral["start_date"],
+        ]
+        end_clause = ""
+        if referral.get("end_date"):
+            end_clause = "AND transaction_date <= ?"
+            parameters.append(referral["end_date"])
+        base_query = f"""
+            SELECT id, amount_cents, transaction_date
+              FROM transactions
+             WHERE client_id = ? AND company_id = ? AND kind = 'income'
+               AND {status_clause} AND transaction_date >= ? {end_clause}
+        """
+        with self.database.connection() as connection:
+            if referral["recurrence"] == "first":
+                row = connection.execute(
+                    base_query + " ORDER BY transaction_date, id LIMIT 1", parameters
+                ).fetchone()
+                if row is None or not str(row["transaction_date"]).startswith(month):
+                    return {"base_cents": 0, "transaction_count": 0}
+                return {"base_cents": int(row["amount_cents"]), "transaction_count": 1}
+            rows = connection.execute(
+                base_query + " AND substr(transaction_date, 1, 7) = ?",
+                (*parameters, month),
+            ).fetchall()
+        return {
+            "base_cents": sum(int(row["amount_cents"]) for row in rows),
+            "transaction_count": len(rows),
+        }
+
+    def list_commission_payments(self, company_id: int, month: str) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT pay.*, p.name AS partner_name
+                  FROM commission_payments pay
+                  JOIN partners p ON p.id = pay.partner_id
+                 WHERE p.company_id = ? AND pay.month = ?
+                 ORDER BY pay.paid_date DESC, pay.id DESC
+                """,
+                (company_id, month),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_commission_payment(self, values: dict[str, Any]) -> dict[str, Any]:
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                f"INSERT INTO commission_payments ({columns}) VALUES ({placeholders})",
+                tuple(values.values()),
+            )
+            row = connection.execute(
+                """
+                SELECT pay.*, p.name AS partner_name
+                  FROM commission_payments pay
+                  JOIN partners p ON p.id = pay.partner_id
+                 WHERE pay.id = ?
+                """,
+                (int(cursor.lastrowid),),
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def delete_commission_payment(self, payment_id: int, company_id: int) -> bool:
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM commission_payments
+                 WHERE id = ? AND partner_id IN (
+                       SELECT id FROM partners WHERE company_id = ?
+                 )
+                """,
+                (payment_id, company_id),
+            )
+        return cursor.rowcount == 1
+
+    def company_comparison(self, month: str) -> dict[str, Any]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT co.id, co.name, co.slug, co.municipality,
+                       COALESCE(SUM(CASE WHEN t.kind = 'income' AND t.status = 'paid' THEN t.amount_cents END), 0) AS revenue_cents,
+                       COALESCE(SUM(CASE WHEN t.kind = 'expense' AND t.status = 'paid' THEN t.amount_cents END), 0) AS expense_cents,
+                       COALESCE(SUM(CASE WHEN t.kind = 'income' AND t.status = 'cancelled' THEN t.amount_cents END), 0) AS cancelled_cents,
+                       COUNT(CASE WHEN t.kind = 'income' AND t.status = 'paid' THEN 1 END) AS invoice_count,
+                       COUNT(CASE WHEN t.kind = 'income' AND t.status = 'cancelled' THEN 1 END) AS cancelled_count,
+                       COUNT(DISTINCT CASE WHEN t.kind = 'income' AND t.status != 'cancelled' THEN t.client_id END) AS client_count
+                  FROM companies co
+                  LEFT JOIN transactions t ON t.company_id = co.id
+                   AND substr(t.transaction_date, 1, 7) = ?
+                 WHERE co.is_active = 1
+                 GROUP BY co.id
+                 ORDER BY co.id
+                """,
+                (month,),
+            ).fetchall()
+            unassigned = connection.execute(
+                """
+                SELECT COUNT(*) AS transaction_count,
+                       COALESCE(SUM(CASE WHEN kind = 'income' AND status = 'paid' THEN amount_cents END), 0) AS revenue_cents
+                  FROM transactions
+                 WHERE company_id IS NULL AND substr(transaction_date, 1, 7) = ?
+                """,
+                (month,),
+            ).fetchone()
+            clients = connection.execute(
+                """
+                SELECT COUNT(DISTINCT client_id) AS client_count
+                  FROM transactions
+                 WHERE kind = 'income' AND status != 'cancelled'
+                   AND client_id IS NOT NULL AND substr(transaction_date, 1, 7) = ?
+                """,
+                (month,),
+            ).fetchone()
+        items = [dict(row) for row in rows]
+        revenue_total = sum(int(item["revenue_cents"]) for item in items) + int(unassigned["revenue_cents"])
+        for item in items:
+            item["balance_cents"] = int(item["revenue_cents"]) - int(item["expense_cents"])
+            item["share_percent"] = round(int(item["revenue_cents"]) / revenue_total * 100, 2) if revenue_total else 0
+        return {
+            "month": month,
+            "items": items,
+            "totals": {
+                "revenue_cents": revenue_total,
+                "expense_cents": sum(int(item["expense_cents"]) for item in items),
+                "cancelled_cents": sum(int(item["cancelled_cents"]) for item in items),
+                "invoice_count": sum(int(item["invoice_count"]) for item in items),
+                "cancelled_count": sum(int(item["cancelled_count"]) for item in items),
+                "client_count": int(clients["client_count"]),
+                "unassigned_count": int(unassigned["transaction_count"]),
+            },
+        }

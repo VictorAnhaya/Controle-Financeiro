@@ -1,12 +1,21 @@
 const state = {
-  view: "dashboard",
+  view: "consolidated",
+  company: "all",
+  user: null,
+  users: [],
+  clients: [],
+  companies: [],
+  goals: null,
   month: "",
-  metadata: { categories: [], cost_centers: [] },
+  clientMonth: "",
+  metadata: { categories: [], cost_centers: [], clients: [], companies: [] },
   transactions: [],
   documents: [],
   ranking: null,
   reviewDocument: null,
   dashboard: null,
+  consolidated: null,
+  commissions: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -17,6 +26,9 @@ const statusLabel = { paid: "Pago/recebido", pending: "Pendente", overdue: "Venc
 const colors = ["#2f6fed", "#7657d6", "#d68a18", "#d94d5c", "#4f84c4", "#9a62b4", "#b56a43", "#52657e"];
 
 function formatMoney(cents = 0) { return money.format(Number(cents) / 100); }
+function companyName(companyId) {
+  return (state.metadata.companies || []).find(item => item.id === Number(companyId))?.name || "Não definida";
+}
 function formatDate(value) {
   if (!value) return "—";
   const [year, month, day] = value.split("-");
@@ -37,6 +49,7 @@ async function api(path, options = {}) {
   const response = await fetch(path, options);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ error: "Falha ao processar a solicitação." }));
+    if (response.status === 401 && !path.startsWith("/api/auth/")) showAuth(false);
     throw new Error(payload.error || "Falha ao processar a solicitação.");
   }
   if (response.status === 204) return null;
@@ -50,13 +63,97 @@ function queryString(values) {
 }
 
 async function initialize() {
-  wireEvents();
+  wireAuthEvents();
+  const status = await api("/api/auth/status");
+  if (!status.authenticated) {
+    showAuth(status.setup_required);
+    return;
+  }
+  await enterApplication(status.user);
+}
+
+function wireAuthEvents() {
+  $("#loginForm").addEventListener("submit", login);
+  $("#setupForm").addEventListener("submit", setupAdministrator);
+  $("#logoutButton").addEventListener("click", logout);
+}
+
+function showAuth(setupRequired) {
+  state.user = null;
+  document.body.classList.remove("authenticated");
+  $("#setupForm").hidden = !setupRequired;
+  $("#loginForm").hidden = setupRequired;
+  $("#loginError").textContent = "";
+  $("#setupError").textContent = "";
+}
+
+async function enterApplication(user) {
+  state.user = user;
+  state.view = "consolidated";
+  state.company = "all";
+  document.body.classList.add("authenticated");
+  $("#currentUserName").textContent = user.name;
+  $("#currentUserRole").textContent = user.role === "admin" ? "Administrador" : "Usuário comum";
+  $("#userAvatar").textContent = user.name.trim().charAt(0).toUpperCase() || "U";
+  $$(".admin-only").forEach(element => { element.hidden = user.role !== "admin"; });
+  $("#pageTitle").textContent = "Consolidado";
+  $$(".view").forEach(element => element.classList.toggle("active", element.id === "consolidatedView"));
+  $$(".nav-item").forEach(element => element.classList.toggle("active", element.dataset.view === "consolidated"));
+  if (!enterApplication.wired) {
+    wireEvents();
+    enterApplication.wired = true;
+  }
   state.metadata = await api("/api/meta");
   const currentMonth = new Date().toISOString().slice(0, 7);
   state.month = state.metadata.latest_month || currentMonth;
+  state.clientMonth = state.month;
   $("#monthPicker").value = state.month;
+  $("#clientMonthFilter").value = state.clientMonth;
   populateDataLists();
   await loadCurrentView();
+}
+
+async function login(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  $("#loginError").textContent = "";
+  try {
+    const payload = Object.fromEntries(new FormData(form));
+    const result = await api("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    form.reset();
+    await enterApplication(result.user);
+  } catch (error) { $("#loginError").textContent = error.message; }
+}
+
+async function setupAdministrator(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form));
+  $("#setupError").textContent = "";
+  if (payload.password !== payload.password_confirmation) {
+    $("#setupError").textContent = "A confirmação da senha não corresponde.";
+    return;
+  }
+  delete payload.password_confirmation;
+  try {
+    const result = await api("/api/auth/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    form.reset();
+    await enterApplication(result.user);
+    toast("Administrador criado com sucesso.");
+  } catch (error) { $("#setupError").textContent = error.message; }
+}
+
+async function logout() {
+  try { await api("/api/auth/logout", { method: "POST" }); }
+  finally { showAuth(false); }
 }
 
 function populateDataLists() {
@@ -65,6 +162,26 @@ function populateDataLists() {
   $("#expenseCategories").innerHTML = categoryOptions;
   $("#categoryFilter").innerHTML = `<option value="">Todas</option>${state.metadata.categories.map(item => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`).join("")}`;
   $("#costCenters").innerHTML = state.metadata.cost_centers.map(item => `<option value="${escapeHtml(item)}"></option>`).join("");
+  const clientSelect = $("#transactionClient");
+  const selectedClient = clientSelect.value;
+  clientSelect.innerHTML = `<option value="">Informar manualmente</option>${(state.metadata.clients || []).map(item => `<option value="${item.id}">${escapeHtml(item.name)}${item.tax_id ? ` · ${escapeHtml(formatTaxId(item.tax_id))}` : ""}</option>`).join("")}`;
+  clientSelect.value = selectedClient;
+  const companyOptions = (state.metadata.companies || []).map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("");
+  $("#companyPicker").innerHTML = `<option value="all">Consolidado</option>${companyOptions}`;
+  $("#companyPicker").value = state.company;
+  $("#transactionCompany").innerHTML = `<option value="">Selecione</option>${companyOptions}`;
+  updateCommissionVisibility();
+}
+
+function brcCompany() {
+  return (state.metadata.companies || []).find(item => item.slug === "brc");
+}
+
+function updateCommissionVisibility() {
+  const brc = brcCompany();
+  const allowed = state.user?.role === "admin" && brc && String(brc.id) === String(state.company);
+  $$(".brc-only").forEach(element => { element.hidden = !allowed; });
+  return Boolean(allowed);
 }
 
 function wireEvents() {
@@ -72,8 +189,17 @@ function wireEvents() {
   $$('[data-go]').forEach(button => button.addEventListener("click", () => switchView(button.dataset.go)));
   $("#menuButton").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
   $("#monthPicker").addEventListener("change", async event => { state.month = event.target.value; await loadCurrentView(); });
+  $("#companyPicker").addEventListener("change", async event => {
+    state.company = event.target.value;
+    const commissionAllowed = updateCommissionVisibility();
+    if (state.view === "commissions" && !commissionAllowed) return switchView("dashboard");
+    if (state.view === "consolidated" && state.company !== "all") return switchView("dashboard");
+    await loadCurrentView();
+  });
   $("#newTransactionButton").addEventListener("click", () => openTransactionDialog());
   $("#transactionForm").addEventListener("submit", saveTransaction);
+  $$('#transactionForm input[name="kind"]').forEach(input => input.addEventListener("change", updateTransactionClientVisibility));
+  $("#transactionClient").addEventListener("change", applySelectedClient);
   $("#budgetForm").addEventListener("submit", saveBudget);
   $("#importButton").addEventListener("click", () => $("#importInput").click());
   $("#importInput").addEventListener("change", importWorkbook);
@@ -87,16 +213,49 @@ function wireEvents() {
   $$('#documentReviewForm input[name="kind"]').forEach(input => input.addEventListener("change", applyReviewParty));
   $("#rankingScope").addEventListener("change", loadRanking);
   $("#rankingSearch").addEventListener("input", () => renderRankingTable(state.ranking));
+  $("#newClientButton").addEventListener("click", () => openClientDialog());
+  $("#clientForm").addEventListener("submit", saveClient);
+  $("#clientStatusFilter").addEventListener("change", loadClients);
+  $("#clientMonthFilter").addEventListener("change", event => { state.clientMonth = event.target.value || state.month; loadClients(); });
+  $("#clientSearch").addEventListener("input", debounce(loadClients, 300));
+  $("#clearClientFilters").addEventListener("click", () => { $("#clientSearch").value = ""; $("#clientStatusFilter").value = ""; state.clientMonth = state.month; $("#clientMonthFilter").value = state.clientMonth; loadClients(); });
+  $("#goalForm").addEventListener("submit", saveGoal);
   $("#exportButton").addEventListener("click", exportReport);
+  $("#newUserButton").addEventListener("click", () => openUserDialog());
+  $("#userForm").addEventListener("submit", saveUser);
+  $("#newCompanyButton").addEventListener("click", openCompanyDialog);
+  $("#companyForm").addEventListener("submit", saveCompany);
+  $("#newPartnerButton").addEventListener("click", () => openPartnerDialog());
+  $("#partnerForm").addEventListener("submit", savePartner);
+  $("#newReferralButton").addEventListener("click", () => openReferralDialog());
+  $("#referralForm").addEventListener("submit", saveReferral);
+  $("#referralPartner").addEventListener("change", applyPartnerDefaultPercentage);
+  $("#newCommissionPaymentButton").addEventListener("click", openCommissionPaymentDialog);
+  $("#commissionPaymentForm").addEventListener("submit", saveCommissionPayment);
+  $("#commissionPaymentPartner").addEventListener("change", applyPendingCommissionAmount);
+  $$('[data-close-dialog]').forEach(button => button.addEventListener("click", () => $("#" + button.dataset.closeDialog).close()));
   $("#clearFiltersButton").addEventListener("click", clearFilters);
   ["#kindFilter", "#statusFilter", "#categoryFilter"].forEach(selector => $(selector).addEventListener("change", loadTransactions));
   $("#searchFilter").addEventListener("input", debounce(loadTransactions, 300));
-  window.addEventListener("resize", debounce(() => { if (state.view === "dashboard" && state.dashboard) renderCharts(state.dashboard); }, 180));
+  window.addEventListener("resize", debounce(() => {
+    if (state.view === "consolidated" && state.consolidated) drawCompanyChart(state.consolidated.items);
+    if (state.view === "dashboard" && state.dashboard) renderCharts(state.dashboard);
+    if (state.view === "goals" && state.goals) drawGoalsChart(state.goals.history);
+  }, 180));
 }
 
 function switchView(view) {
+  if (["users", "companies", "commissions"].includes(view) && state.user?.role !== "admin") return;
+  if (view === "commissions" && !updateCommissionVisibility()) {
+    toast("Selecione a empresa BRC para acessar sócios e comissões.", "error");
+    return;
+  }
+  if (view === "consolidated") {
+    state.company = "all";
+    $("#companyPicker").value = "all";
+  }
   state.view = view;
-  const titles = { dashboard: "Visão geral", transactions: "Lançamentos", documents: "Notas fiscais", ranking: "Ranking de clientes", budgets: "Orçamentos", reports: "Relatórios" };
+  const titles = { consolidated: "Consolidado", dashboard: "Visão geral", transactions: "Lançamentos", clients: "Clientes", documents: "Notas fiscais", ranking: "Ranking de clientes", budgets: "Orçamentos", goals: "Metas e projeções", reports: "Relatórios", commissions: "Sócios e comissões", companies: "Empresas", users: "Usuários" };
   $("#pageTitle").textContent = titles[view];
   $$(".view").forEach(element => element.classList.remove("active"));
   $(`#${view}View`).classList.add("active");
@@ -106,16 +265,74 @@ function switchView(view) {
 }
 
 async function loadCurrentView() {
+  if (state.view === "consolidated") return loadConsolidated();
   if (state.view === "dashboard") return loadDashboard();
   if (state.view === "transactions") return loadTransactions();
+  if (state.view === "clients") return loadClients();
   if (state.view === "documents") return loadDocuments();
   if (state.view === "ranking") return loadRanking();
   if (state.view === "budgets") return loadBudgets();
+  if (state.view === "goals") return loadGoals();
   if (state.view === "reports") return loadReports();
+  if (state.view === "commissions") return loadCommissions();
+  if (state.view === "companies") return loadCompanies();
+  if (state.view === "users") return loadUsers();
+}
+
+async function loadConsolidated() {
+  const data = await api(`/api/consolidated?month=${state.month}`);
+  state.consolidated = data;
+  $("#consolidatedRevenue").textContent = formatMoney(data.totals.revenue_cents);
+  $("#consolidatedInvoiceCount").textContent = `${integer.format(data.totals.invoice_count)} notas ativas`;
+  $("#consolidatedCancelled").textContent = formatMoney(data.totals.cancelled_cents);
+  $("#consolidatedCancelledCount").textContent = `${integer.format(data.totals.cancelled_count)} canceladas`;
+  $("#consolidatedClients").textContent = integer.format(data.totals.client_count);
+  $("#unassignedTransactions").textContent = integer.format(data.totals.unassigned_count);
+  $("#companyComparisonCards").innerHTML = data.items.map(item => {
+    const gross = item.revenue_cents + item.cancelled_cents;
+    const cancellation = gross ? item.cancelled_cents / gross * 100 : 0;
+    return `<article class="company-card">
+      <header><div><span>Empresa</span><h3>${escapeHtml(item.name)}</h3><small>${escapeHtml(item.municipality || "")}</small></div><strong>${item.share_percent.toFixed(1).replace(".", ",")}%</strong></header>
+      <div class="company-card-metrics"><div><span>Receita</span><strong>${formatMoney(item.revenue_cents)}</strong></div><div><span>Notas</span><strong>${integer.format(item.invoice_count)}</strong></div><div><span>Clientes</span><strong>${integer.format(item.client_count)}</strong></div><div><span>Cancelamento</span><strong>${cancellation.toFixed(1).replace(".", ",")}%</strong></div></div>
+      <button class="button secondary full" data-open-company="${item.id}">Ver somente ${escapeHtml(item.name)}</button>
+    </article>`;
+  }).join("");
+  $$('[data-open-company]').forEach(button => button.addEventListener("click", () => {
+    state.company = button.dataset.openCompany;
+    $("#companyPicker").value = state.company;
+    switchView("dashboard");
+  }));
+  requestAnimationFrame(() => drawCompanyChart(data.items));
+}
+
+function drawCompanyChart(items) {
+  const canvas = $("#companyChart");
+  const { context, width, height } = prepareCanvas(canvas, 260);
+  context.clearRect(0, 0, width, height);
+  const padding = { top: 20, right: 16, bottom: 44, left: 58 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maximum = Math.max(...items.flatMap(item => [item.revenue_cents, item.cancelled_cents]), 1);
+  context.font = "10px Inter, sans-serif";
+  for (let step = 0; step <= 4; step++) {
+    const y = padding.top + plotHeight / 4 * step;
+    context.strokeStyle = "#edf0f4"; context.beginPath(); context.moveTo(padding.left, y); context.lineTo(width - padding.right, y); context.stroke();
+    context.fillStyle = "#8993a4"; context.textAlign = "right"; context.fillText(`${Math.round((maximum - maximum / 4 * step) / 100000)}k`, padding.left - 8, y + 3);
+  }
+  const group = plotWidth / Math.max(items.length, 1);
+  items.forEach((item, index) => {
+    const center = padding.left + group * index + group / 2;
+    const barWidth = Math.min(42, group * .22);
+    [[item.revenue_cents, "#2f6fed", -barWidth - 4], [item.cancelled_cents, "#d94d5c", 4]].forEach(([value, color, offset]) => {
+      const barHeight = value / maximum * plotHeight;
+      context.fillStyle = color; context.beginPath(); context.roundRect(center + offset, padding.top + plotHeight - barHeight, barWidth, barHeight, 4); context.fill();
+    });
+    context.fillStyle = "#52657e"; context.textAlign = "center"; context.fillText(item.name, center, height - 16);
+  });
 }
 
 async function loadDashboard() {
-  const data = await api(`/api/dashboard?month=${state.month}`);
+  const data = await api(`/api/dashboard?${queryString({ month: state.month, company: state.company })}`);
   state.dashboard = data;
   const totals = data.totals;
   $("#incomeMetric").textContent = formatMoney(totals.income_cents);
@@ -225,7 +442,7 @@ function drawCategoryChart(canvas, rows) {
 }
 
 function transactionFilters() {
-  return { month: state.month, kind: $("#kindFilter").value, status: $("#statusFilter").value, category: $("#categoryFilter").value, search: $("#searchFilter").value.trim() };
+  return { month: state.month, company: state.company, kind: $("#kindFilter").value, status: $("#statusFilter").value, category: $("#categoryFilter").value, search: $("#searchFilter").value.trim() };
 }
 
 async function loadTransactions() {
@@ -234,12 +451,13 @@ async function loadTransactions() {
   $("#transactionsTable").innerHTML = rows.length ? rows.map(row => `
     <tr>
       <td>${formatDate(row.transaction_date)}</td>
+      <td><span class="company-chip">${escapeHtml(companyName(row.company_id))}</span></td>
       <td class="transaction-name"><strong>${escapeHtml(row.description)}</strong><small>${escapeHtml(row.counterparty || row.cost_center || "Sem favorecido")}</small></td>
       <td>${escapeHtml(row.category)}</td>
       <td><span class="badge ${row.status}">${statusLabel[row.status]}</span></td>
       <td class="align-right"><strong class="amount-${row.kind}">${row.kind === "expense" ? "−" : "+"} ${formatMoney(row.amount_cents)}</strong></td>
-      <td><div class="row-actions"><button data-edit="${row.id}">Editar</button><button class="delete" data-delete="${row.id}">Excluir</button></div></td>
-    </tr>`).join("") : `<tr><td colspan="6" class="empty-state">Nenhum lançamento encontrado.</td></tr>`;
+      <td><div class="row-actions"><button data-edit="${row.id}" title="Editar lançamento">Editar</button><button class="delete" data-delete="${row.id}" title="Excluir lançamento definitivamente">Excluir</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="7" class="empty-state">Nenhum lançamento encontrado.</td></tr>`;
   $("#transactionsCount").textContent = `${integer.format(rows.length)} lançamento${rows.length === 1 ? "" : "s"}`;
   const net = rows.reduce((sum, row) => sum + (row.kind === "income" ? row.amount_cents : -row.amount_cents), 0);
   $("#transactionsTotal").textContent = `Saldo listado: ${formatMoney(net)}`;
@@ -259,6 +477,7 @@ function openTransactionDialog(id = null) {
   form.elements.transaction_date.value = new Date().toISOString().slice(0, 10);
   form.elements.status.value = "paid";
   form.elements.kind.value = "expense";
+  form.elements.company_id.value = state.company === "all" ? "" : state.company;
   $("#dialogTitle").textContent = id ? "Editar lançamento" : "Novo lançamento";
   if (id) {
     const row = state.transactions.find(item => item.id === id);
@@ -266,7 +485,23 @@ function openTransactionDialog(id = null) {
     Object.entries(row).forEach(([key, value]) => { if (form.elements[key] && value !== null) form.elements[key].value = value; });
     form.elements.amount.value = (row.amount_cents / 100).toFixed(2).replace(".", ",");
   }
+  updateTransactionClientVisibility();
   $("#transactionDialog").showModal();
+}
+
+function updateTransactionClientVisibility() {
+  const form = $("#transactionForm");
+  const isIncome = form.elements.kind.value === "income";
+  $(".income-client-field").hidden = !isIncome;
+  if (!isIncome) form.elements.client_id.value = "";
+}
+
+function applySelectedClient() {
+  const form = $("#transactionForm");
+  const client = (state.metadata.clients || []).find(item => item.id === Number(form.elements.client_id.value));
+  if (!client) return;
+  form.elements.counterparty.value = client.name;
+  form.elements.counterparty_tax_id.value = formatTaxId(client.tax_id);
 }
 
 async function saveTransaction(event) {
@@ -289,8 +524,175 @@ async function deleteTransaction(id) {
   catch (error) { toast(error.message, "error"); }
 }
 
+async function loadClients() {
+  const selectedMonth = $("#clientMonthFilter").value || state.clientMonth || state.month;
+  state.clientMonth = selectedMonth;
+  const params = queryString({ month: selectedMonth, company: state.company, search: $("#clientSearch").value.trim(), status: $("#clientStatusFilter").value });
+  const data = await api(`/api/clients?${params}`);
+  state.clients = data.items;
+  $("#activeClientsMetric").textContent = integer.format(data.summary.active_count);
+  $("#inactiveClientsMetric").textContent = integer.format(data.summary.inactive_count);
+  $("#newClientsMetric").textContent = integer.format(data.summary.new_count);
+  $("#clientRevenueMetric").textContent = formatMoney(data.summary.revenue_cents);
+  $("#clientsTable").innerHTML = data.items.length ? data.items.map(client => `
+    <tr>
+      <td class="transaction-name"><strong>${escapeHtml(client.name)}</strong><small>${client.tax_id ? escapeHtml(formatTaxId(client.tax_id)) : "Sem CPF/CNPJ"}</small></td>
+      <td class="transaction-name"><strong>${escapeHtml(client.contact_name || "—")}</strong><small>${escapeHtml(client.email || client.phone || "Sem contato informado")}</small></td>
+      <td><span class="badge ${client.status}">${client.status === "active" ? "Ativo" : "Inativo"}</span></td>
+      <td><strong>${formatMoney(client.month_revenue_cents)}</strong><small class="table-note">${integer.format(client.month_invoice_count)} lançamento(s)</small></td>
+      <td><strong>${formatMoney(client.total_revenue_cents)}</strong><small class="table-note">${integer.format(client.invoice_count)} lançamento(s)</small></td>
+      <td>${formatDate(client.last_revenue_date)}</td>
+      <td><div class="row-actions"><button data-edit-client="${client.id}">Editar</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="7" class="empty-state">Nenhum cliente encontrado.</td></tr>`;
+  $$('[data-edit-client]').forEach(button => button.addEventListener("click", () => openClientDialog(Number(button.dataset.editClient))));
+}
+
+async function loadCompanies() {
+  const companies = await api("/api/companies");
+  state.companies = companies;
+  $("#companiesTable").innerHTML = companies.length ? companies.map(company => `
+    <tr>
+      <td class="transaction-name"><strong>${escapeHtml(company.name)}</strong><small>Código interno: ${company.id}</small></td>
+      <td>${escapeHtml(company.municipality || "Não informado")}</td>
+      <td><span class="badge active">Disponível no consolidado</span></td>
+      <td><div class="row-actions"><button class="delete" data-delete-company="${company.id}" title="Excluir empresa">Excluir</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="4" class="empty-state">Nenhuma empresa cadastrada.</td></tr>`;
+  $$('[data-delete-company]').forEach(button => button.addEventListener("click", () => deleteCompany(Number(button.dataset.deleteCompany))));
+}
+
+function openCompanyDialog() {
+  $("#companyForm").reset();
+  $("#companyFormError").textContent = "";
+  $("#companyDialog").showModal();
+}
+
+async function saveCompany(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form));
+  try {
+    await api("/api/companies", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    $("#companyDialog").close();
+    toast("Empresa cadastrada e adicionada ao consolidado.");
+    state.metadata = await api("/api/meta");
+    populateDataLists();
+    await loadCompanies();
+  } catch (error) { $("#companyFormError").textContent = error.message; }
+}
+
+async function deleteCompany(id) {
+  const company = state.companies.find(item => item.id === id);
+  if (!company || !window.confirm(`Excluir a empresa "${company.name}"? A exclusão só será permitida se ela não possuir lançamentos, notas fiscais, metas ou orçamentos.`)) return;
+  try {
+    await api(`/api/companies/${id}`, { method: "DELETE" });
+    if (String(state.company) === String(id)) state.company = "all";
+    state.metadata = await api("/api/meta");
+    populateDataLists();
+    await loadCompanies();
+    toast("Empresa excluída.");
+  } catch (error) { toast(error.message, "error"); }
+}
+
+function openClientDialog(id = null) {
+  const form = $("#clientForm");
+  form.reset();
+  $("#clientFormError").textContent = "";
+  form.elements.id.value = id || "";
+  form.elements.status.value = "active";
+  $("#clientDialogTitle").textContent = id ? "Editar cliente" : "Novo cliente";
+  if (id) {
+    const client = state.clients.find(item => item.id === id);
+    if (!client) return;
+    Object.entries(client).forEach(([key, value]) => { if (form.elements[key] && value !== null) form.elements[key].value = value; });
+    form.elements.tax_id.value = formatTaxId(client.tax_id);
+  }
+  $("#clientDialog").showModal();
+}
+
+async function saveClient(event) {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") { $("#clientDialog").close(); return; }
+  const payload = Object.fromEntries(new FormData(event.currentTarget));
+  const id = payload.id; delete payload.id;
+  try {
+    await api(id ? `/api/clients/${id}` : "/api/clients", { method: id ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    $("#clientDialog").close();
+    toast(id ? "Cliente atualizado." : "Cliente cadastrado.");
+    state.metadata = await api("/api/meta"); populateDataLists(); await loadClients();
+  } catch (error) { $("#clientFormError").textContent = error.message; }
+}
+
+async function loadGoals() {
+  const data = await api(`/api/goals?${queryString({ month: state.month, company: state.company })}`);
+  state.goals = data;
+  const form = $("#goalForm");
+  const goal = data.goal;
+  form.elements.revenue_target.value = goal ? (goal.revenue_target_cents / 100).toFixed(2).replace(".", ",") : "";
+  form.elements.expense_limit.value = goal ? (goal.expense_limit_cents / 100).toFixed(2).replace(".", ",") : "";
+  form.elements.new_clients_target.value = goal?.new_clients_target ?? 0;
+  form.elements.notes.value = goal?.notes || "";
+  $("#goalRevenueActual").textContent = formatMoney(data.actual.revenue_cents);
+  $("#goalExpenseActual").textContent = formatMoney(data.actual.expense_cents);
+  $("#goalRevenueProjection").textContent = formatMoney(data.projection.revenue_cents);
+  $("#goalResultProjection").textContent = formatMoney(data.projection.result_cents);
+  $("#goalRevenueProgress").textContent = goal ? `${data.progress.revenue_percent}% da meta · faltam ${formatMoney(data.progress.revenue_remaining_cents)}` : "Sem meta cadastrada";
+  $("#goalExpenseProgress").textContent = goal ? `${data.progress.expense_percent}% do limite · saldo ${formatMoney(data.progress.expense_available_cents)}` : "Sem limite cadastrado";
+  $("#goalStatusLabel").textContent = goal ? `Metas cadastradas para ${state.month}` : `Sem metas para ${state.month}`;
+  const entries = [
+    ["Receita", data.actual.revenue_cents, goal?.revenue_target_cents || 0, data.progress.revenue_percent, "blue"],
+    ["Despesas", data.actual.expense_cents, goal?.expense_limit_cents || 0, data.progress.expense_percent, data.progress.expense_percent > 100 ? "danger" : "amber"],
+    ["Novos clientes", data.actual.new_clients, goal?.new_clients_target || 0, data.progress.clients_percent, "violet"],
+  ];
+  $("#goalProgressList").innerHTML = entries.map(([label, actual, target, percent, color], index) => `
+    <div class="goal-progress-item"><div><strong>${label}</strong><span>${index < 2 ? `${formatMoney(actual)} de ${target ? formatMoney(target) : "meta não definida"}` : `${integer.format(actual)} de ${target || "meta não definida"}`}</span></div><div class="progress"><i class="${color}" style="width:${Math.min(percent, 100)}%"></i></div><b>${percent}%</b></div>`).join("");
+  $("#goalScenariosTable").innerHTML = data.scenarios.map(item => `
+    <tr><td><strong>${escapeHtml(item.label)}</strong></td><td>${formatMoney(item.monthly_revenue_cents)}</td><td>${formatMoney(item.annual_revenue_cents)}</td><td>${integer.format(item.notes_month)}</td><td>${integer.format(item.notes_year)}</td><td>${formatMoney(item.average_ticket_cents)}</td></tr>`).join("");
+  $("#goalForecastTable").innerHTML = data.forecast_months.map(item => `
+    <tr><td><strong>${escapeHtml(item.label)}</strong></td><td>${integer.format(item.estimated_notes)}</td><td>${escapeHtml(item.seasonality)}</td><td>${item.factor.toFixed(2).replace(".", ",")}</td><td>${formatMoney(item.revenue_cents)}</td><td>${formatMoney(item.accumulated_cents)}</td></tr>`).join("");
+  requestAnimationFrame(() => drawGoalsChart(data.history));
+}
+
+async function saveGoal(event) {
+  event.preventDefault();
+  const payload = Object.fromEntries(new FormData(event.currentTarget));
+  payload.month = state.month;
+  payload.company = state.company;
+  try {
+    state.goals = await api("/api/goals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    toast("Metas salvas para o período."); await loadGoals();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+function drawGoalsChart(rows) {
+  const canvas = $("#goalsChart");
+  const { context, width, height } = prepareCanvas(canvas, 240);
+  context.clearRect(0, 0, width, height);
+  const padding = { top: 18, right: 12, bottom: 34, left: 52 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maximum = Math.max(...rows.flatMap(row => [row.revenue_cents, row.expense_cents, row.goal?.revenue_target_cents || 0]), 1);
+  context.font = "10px Inter, sans-serif";
+  for (let step = 0; step <= 4; step++) {
+    const y = padding.top + plotHeight / 4 * step;
+    context.strokeStyle = "#edf0f4"; context.beginPath(); context.moveTo(padding.left, y); context.lineTo(width - padding.right, y); context.stroke();
+    context.fillStyle = "#8993a4"; context.textAlign = "right"; context.fillText(`${Math.round((maximum - maximum / 4 * step) / 100000)}k`, padding.left - 8, y + 3);
+  }
+  const group = plotWidth / rows.length;
+  rows.forEach((row, index) => {
+    const center = padding.left + group * index + group / 2;
+    [[row.revenue_cents, "#2f6fed", -10], [row.expense_cents, "#d94d5c", 2]].forEach(([value, color, offset]) => {
+      const barHeight = value / maximum * plotHeight; context.fillStyle = color; context.fillRect(center + offset, padding.top + plotHeight - barHeight, 8, barHeight);
+    });
+    context.fillStyle = "#8993a4"; context.textAlign = "center"; context.fillText(row.month.slice(5), center, height - 10);
+  });
+}
+
 async function loadBudgets() {
-  const rows = await api(`/api/budgets?month=${state.month}`);
+  const rows = await api(`/api/budgets?${queryString({ month: state.month, company: state.company })}`);
   $("#budgetCards").innerHTML = rows.length ? rows.map(row => {
     const usage = row.limit_cents ? Math.round(row.used_cents / row.limit_cents * 100) : 0;
     const level = usage > 100 ? "danger" : usage >= 80 ? "warning" : "";
@@ -299,19 +701,20 @@ async function loadBudgets() {
 }
 
 async function loadDocuments() {
-  const documents = await api("/api/documents");
+  const documents = await api(`/api/documents?${queryString({ company: state.company })}`);
   state.documents = documents;
   $("#documentCount").textContent = `${integer.format(documents.length)} documento${documents.length === 1 ? "" : "s"}`;
   const documentStatus = { analyzed: "Analisado", needs_review: "Revisar", linked: "Vinculado" };
   $("#documentsTable").innerHTML = documents.length ? documents.map(document => `
     <tr>
+      <td><span class="company-chip">${escapeHtml(companyName(document.company_id))}</span></td>
       <td class="document-file"><strong>${escapeHtml(document.file_name)}</strong><small>${escapeHtml(document.document_type)}${document.document_number ? ` · Nº ${escapeHtml(document.document_number)}` : ""}</small></td>
       <td>${escapeHtml(document.issuer_name || "Não identificado")}</td>
       <td>${formatDate(document.issue_date)}</td>
       <td><span class="badge ${document.extraction_status}">${documentStatus[document.extraction_status]}</span></td>
       <td class="align-right"><strong>${document.total_cents ? formatMoney(document.total_cents) : "—"}</strong></td>
-      <td><div class="document-actions"><a href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Abrir</a>${document.transaction_id ? "" : `<button data-review-document="${document.id}">Conferir</button><button data-reanalyze-document="${document.id}">Reler nota</button>`}</div></td>
-    </tr>`).join("") : `<tr><td colspan="6" class="empty-state">Nenhum documento anexado.</td></tr>`;
+      <td><div class="document-actions"><a href="/api/documents/${document.id}/file" target="_blank" rel="noopener">Abrir</a>${document.transaction_id ? "" : `<button data-review-document="${document.id}">Conferir</button><button data-reanalyze-document="${document.id}">Reler nota</button>`}<button class="delete" data-delete-document="${document.id}" title="Excluir nota fiscal">Excluir</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="7" class="empty-state">Nenhum documento anexado.</td></tr>`;
   $$('[data-reanalyze-document]').forEach(button => button.addEventListener("click", async () => {
     button.disabled = true;
     try {
@@ -325,16 +728,32 @@ async function loadDocuments() {
     const document = state.documents.find(item => item.id === Number(button.dataset.reviewDocument));
     if (document) openDocumentReview(document);
   }));
+  $$('[data-delete-document]').forEach(button => button.addEventListener("click", () => deleteDocument(Number(button.dataset.deleteDocument))));
+}
+
+async function deleteDocument(id) {
+  const document = state.documents.find(item => item.id === id);
+  if (!document) return;
+  const linkedWarning = document.transaction_id
+    ? " O lançamento financeiro vinculado será mantido."
+    : "";
+  if (!window.confirm(`Excluir a nota fiscal "${document.file_name}"? O arquivo anexado será removido.${linkedWarning}`)) return;
+  try {
+    await api(`/api/documents/${id}`, { method: "DELETE" });
+    toast("Nota fiscal excluída.");
+    await loadDocuments();
+  } catch (error) { toast(error.message, "error"); }
 }
 
 async function analyzeDocument(file) {
   if (!file) return;
+  if (state.company === "all") { toast("Selecione BRC ou WBK antes de anexar a nota.", "error"); $("#documentInput").value = ""; return; }
   if (file.size > 15 * 1024 * 1024) { toast("O arquivo excede o limite de 15 MB.", "error"); return; }
   toast("Lendo e conferindo a nota fiscal...");
   try {
     const document = await api("/api/documents/analyze", {
       method: "POST",
-      headers: { "Content-Type": file.type || "application/octet-stream", "X-Filename": encodeURIComponent(file.name) },
+      headers: { "Content-Type": file.type || "application/octet-stream", "X-Filename": encodeURIComponent(file.name), "X-Company-Id": state.company },
       body: await file.arrayBuffer(),
     });
     state.documents.unshift(document);
@@ -366,6 +785,7 @@ function openDocumentReview(document) {
   applyReviewParty();
   $("#reviewFileName").textContent = document.file_name;
   $("#documentTypeLabel").textContent = document.document_type;
+  $("#reviewCompanyName").textContent = companyName(document.company_id);
   $("#reviewDocumentLink").href = `/api/documents/${document.id}/file`;
   $("#issuerSummary").textContent = document.issuer_name || "Não identificado";
   $("#issuerTaxSummary").textContent = formatTaxId(document.issuer_tax_id);
@@ -421,7 +841,7 @@ async function saveDocumentTransaction(event) {
 
 async function loadRanking() {
   const scope = $("#rankingScope").value;
-  const data = await api(`/api/ranking?${queryString({ month: state.month, scope })}`);
+  const data = await api(`/api/ranking?${queryString({ month: state.month, scope, company: state.company })}`);
   state.ranking = data;
   const summary = data.summary;
   $("#rankingRevenue").textContent = formatMoney(summary.total_cents);
@@ -469,13 +889,13 @@ function renderRankingTable(data) {
 
 async function saveBudget(event) {
   event.preventDefault();
-  const payload = Object.fromEntries(new FormData(event.currentTarget)); payload.month = state.month;
+  const payload = Object.fromEntries(new FormData(event.currentTarget)); payload.month = state.month; payload.company = state.company;
   try { await api("/api/budgets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); event.currentTarget.reset(); toast("Orçamento salvo."); await loadBudgets(); }
   catch (error) { toast(error.message, "error"); }
 }
 
 async function loadReports() {
-  const data = await api(`/api/dashboard?month=${state.month}`);
+  const data = await api(`/api/dashboard?${queryString({ month: state.month, company: state.company })}`);
   const totals = data.totals;
   const margin = totals.income_cents ? totals.balance_cents / totals.income_cents * 100 : 0;
   const ticket = totals.income_count ? totals.income_cents / totals.income_count : 0;
@@ -493,16 +913,289 @@ async function loadReports() {
     <div class="insight"><span>Maior grupo de despesas</span><strong>${escapeHtml(mainCategory?.category || "Sem despesas")}</strong><small>${mainCategory ? formatMoney(mainCategory.amount_cents) : "Cadastre os gastos do período."}</small></div>`;
 }
 
-function exportReport() { window.location.href = `/api/reports/export.csv?${queryString({ month: state.month })}`; }
+function exportReport() { window.location.href = `/api/reports/export.csv?${queryString({ month: state.month, company: state.company })}`; }
+
+function formatPercentage(value) {
+  return `${Number(value || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+}
+
+function centsForInput(cents) {
+  return (Number(cents || 0) / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+async function loadCommissions() {
+  if (!updateCommissionVisibility()) return;
+  const data = await api(`/api/commissions?month=${state.month}`);
+  state.commissions = data;
+  $("#commissionBaseMetric").textContent = formatMoney(data.summary.base_cents);
+  $("#commissionCalculatedMetric").textContent = formatMoney(data.summary.commission_cents);
+  $("#commissionPaidMetric").textContent = formatMoney(data.summary.paid_cents);
+  $("#commissionPendingMetric").textContent = formatMoney(data.summary.pending_cents);
+
+  $("#partnersTable").innerHTML = data.partners.length ? data.partners.map(partner => `
+    <tr>
+      <td class="user-name"><strong>${escapeHtml(partner.name)}</strong><small>${escapeHtml(partner.email || partner.phone || "Sem contato informado")}</small></td>
+      <td>${formatPercentage(partner.default_percentage_basis_points / 100)}</td>
+      <td>${integer.format(partner.referral_count)}</td>
+      <td><span class="badge ${partner.is_active ? "active" : "inactive"}">${partner.is_active ? "Ativo" : "Inativo"}</span></td>
+      <td><div class="row-actions"><button data-edit-partner="${partner.id}">Editar</button><button class="delete" data-delete-partner="${partner.id}">Excluir</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="5" class="empty-state">Cadastre o primeiro sócio da BRC.</td></tr>`;
+
+  const commissionStatus = { paid: "Pago", partial: "Parcial", pending: "Pendente" };
+  $("#partnerCommissionTable").innerHTML = data.partner_totals.length ? data.partner_totals.map(item => `
+    <tr>
+      <td><strong>${escapeHtml(item.partner_name)}</strong><small class="table-note">${integer.format(item.active_referral_count)} cliente(s) ativo(s)</small></td>
+      <td>${formatMoney(item.base_cents)}</td>
+      <td><strong>${formatMoney(item.commission_cents)}</strong></td>
+      <td>${formatMoney(item.paid_cents)}</td>
+      <td class="${item.pending_cents ? "amount-expense" : "amount-income"}">${formatMoney(item.pending_cents)}</td>
+      <td><span class="badge ${item.status === "paid" ? "paid" : item.status === "partial" ? "pending" : "overdue"}">${commissionStatus[item.status]}</span></td>
+    </tr>`).join("") : `<tr><td colspan="6" class="empty-state">Nenhuma comissão para demonstrar.</td></tr>`;
+
+  $("#referralsTable").innerHTML = data.referrals.length ? data.referrals.map(rule => `
+    <tr class="${rule.is_active ? "" : "muted-row"}">
+      <td>${escapeHtml(rule.partner_name)}</td>
+      <td><strong>${escapeHtml(rule.client_name)}</strong><small class="table-note">${escapeHtml(formatTaxId(rule.client_tax_id || ""))}</small></td>
+      <td>${formatPercentage(rule.percentage)}</td>
+      <td>${rule.calculation_basis === "received" ? "Recebido" : "Faturado"}</td>
+      <td>${rule.recurrence === "recurring" ? "Todas as receitas" : "Primeira receita"}</td>
+      <td>${formatDate(rule.start_date)}${rule.end_date ? ` até ${formatDate(rule.end_date)}` : " em diante"}</td>
+      <td><strong>${formatMoney(rule.commission_cents)}</strong><small class="table-note">Base: ${formatMoney(rule.base_cents)}</small></td>
+      <td><div class="row-actions"><button data-edit-referral="${rule.id}">Editar</button><button class="delete" data-delete-referral="${rule.id}">Excluir</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="8" class="empty-state">Nenhum cliente foi vinculado a um sócio.</td></tr>`;
+
+  $("#commissionPaymentsTable").innerHTML = data.payments.length ? data.payments.map(payment => `
+    <tr>
+      <td>${formatDate(payment.paid_date)}</td><td>${escapeHtml(payment.partner_name)}</td><td>${escapeHtml(payment.month)}</td>
+      <td class="align-right amount-income"><strong>${formatMoney(payment.amount_cents)}</strong></td>
+      <td>${escapeHtml(payment.notes || "—")}</td>
+      <td><div class="row-actions"><button class="delete" data-delete-commission-payment="${payment.id}">Excluir</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="6" class="empty-state">Nenhum pagamento registrado neste mês.</td></tr>`;
+
+  $$('[data-edit-partner]').forEach(button => button.addEventListener("click", () => openPartnerDialog(Number(button.dataset.editPartner))));
+  $$('[data-delete-partner]').forEach(button => button.addEventListener("click", () => deletePartner(Number(button.dataset.deletePartner))));
+  $$('[data-edit-referral]').forEach(button => button.addEventListener("click", () => openReferralDialog(Number(button.dataset.editReferral))));
+  $$('[data-delete-referral]').forEach(button => button.addEventListener("click", () => deleteReferral(Number(button.dataset.deleteReferral))));
+  $$('[data-delete-commission-payment]').forEach(button => button.addEventListener("click", () => deleteCommissionPayment(Number(button.dataset.deleteCommissionPayment))));
+}
+
+function openPartnerDialog(id = null) {
+  const form = $("#partnerForm");
+  form.reset();
+  form.elements.id.value = id || "";
+  form.elements.default_percentage.value = "0,00";
+  form.elements.is_active.checked = true;
+  $("#partnerFormError").textContent = "";
+  $("#partnerDialogTitle").textContent = id ? "Editar sócio" : "Novo sócio";
+  if (id) {
+    const partner = state.commissions?.partners.find(item => item.id === id);
+    if (!partner) return;
+    form.elements.name.value = partner.name;
+    form.elements.tax_id.value = partner.tax_id || "";
+    form.elements.default_percentage.value = String(partner.default_percentage_basis_points / 100).replace(".", ",");
+    form.elements.phone.value = partner.phone || "";
+    form.elements.email.value = partner.email || "";
+    form.elements.is_active.checked = Boolean(partner.is_active);
+    form.elements.notes.value = partner.notes || "";
+  }
+  $("#partnerDialog").showModal();
+}
+
+async function savePartner(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form));
+  const id = payload.id;
+  delete payload.id;
+  payload.is_active = form.elements.is_active.checked;
+  try {
+    await api(id ? `/api/partners/${id}` : "/api/partners", { method: id ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    $("#partnerDialog").close();
+    toast(id ? "Sócio atualizado." : "Sócio cadastrado.");
+    await loadCommissions();
+  } catch (error) { $("#partnerFormError").textContent = error.message; }
+}
+
+async function deletePartner(id) {
+  const partner = state.commissions?.partners.find(item => item.id === id);
+  if (!partner || !confirm(`Excluir o cadastro de ${partner.name}? Cadastros com histórico devem ser apenas desativados.`)) return;
+  try { await api(`/api/partners/${id}`, { method: "DELETE" }); toast("Sócio excluído."); await loadCommissions(); }
+  catch (error) { toast(error.message, "error"); }
+}
+
+function referralOptions() {
+  const partners = state.commissions?.partners || [];
+  $("#referralPartner").innerHTML = `<option value="">Selecione</option>${partners.map(item => `<option value="${item.id}">${escapeHtml(item.name)}${item.is_active ? "" : " (inativo)"}</option>`).join("")}`;
+  $("#referralClient").innerHTML = `<option value="">Selecione</option>${(state.metadata.clients || []).map(item => `<option value="${item.id}">${escapeHtml(item.name)}${item.tax_id ? ` · ${escapeHtml(formatTaxId(item.tax_id))}` : ""}</option>`).join("")}`;
+}
+
+function openReferralDialog(id = null) {
+  if (!state.commissions?.partners.length) { toast("Cadastre um sócio antes de vincular clientes.", "error"); return; }
+  const form = $("#referralForm");
+  form.reset();
+  referralOptions();
+  form.elements.id.value = id || "";
+  form.elements.start_date.value = `${state.month}-01`;
+  form.elements.is_active.checked = true;
+  $("#referralFormError").textContent = "";
+  $("#referralDialogTitle").textContent = id ? "Editar regra de participação" : "Nova regra de participação";
+  if (id) {
+    const rule = state.commissions.referrals.find(item => item.id === id);
+    if (!rule) return;
+    form.elements.partner_id.value = rule.partner_id;
+    form.elements.client_id.value = rule.client_id;
+    form.elements.percentage.value = String(rule.percentage).replace(".", ",");
+    form.elements.calculation_basis.value = rule.calculation_basis;
+    form.elements.recurrence.value = rule.recurrence;
+    form.elements.start_date.value = rule.start_date;
+    form.elements.end_date.value = rule.end_date || "";
+    form.elements.is_active.checked = Boolean(rule.is_active);
+    form.elements.notes.value = rule.notes || "";
+  }
+  $("#referralDialog").showModal();
+}
+
+function applyPartnerDefaultPercentage() {
+  const form = $("#referralForm");
+  if (form.elements.id.value) return;
+  const partner = state.commissions?.partners.find(item => item.id === Number(form.elements.partner_id.value));
+  if (partner && partner.default_percentage_basis_points) {
+    form.elements.percentage.value = String(partner.default_percentage_basis_points / 100).replace(".", ",");
+  }
+}
+
+async function saveReferral(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form));
+  const id = payload.id;
+  delete payload.id;
+  payload.is_active = form.elements.is_active.checked;
+  try {
+    await api(id ? `/api/referrals/${id}` : "/api/referrals", { method: id ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    $("#referralDialog").close();
+    toast(id ? "Regra atualizada." : "Cliente vinculado ao sócio.");
+    await loadCommissions();
+  } catch (error) { $("#referralFormError").textContent = error.message; }
+}
+
+async function deleteReferral(id) {
+  if (!confirm("Excluir esta regra de participação? Os pagamentos já registrados serão preservados.")) return;
+  try { await api(`/api/referrals/${id}`, { method: "DELETE" }); toast("Regra excluída."); await loadCommissions(); }
+  catch (error) { toast(error.message, "error"); }
+}
+
+function openCommissionPaymentDialog() {
+  if (!state.commissions?.partners.length) { toast("Cadastre um sócio antes de registrar pagamentos.", "error"); return; }
+  const form = $("#commissionPaymentForm");
+  form.reset();
+  $("#commissionPaymentFormError").textContent = "";
+  $("#commissionPaymentPartner").innerHTML = `<option value="">Selecione</option>${state.commissions.partners.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}`;
+  form.elements.month.value = state.month;
+  form.elements.paid_date.value = new Date().toISOString().slice(0, 10);
+  $("#commissionPaymentDialog").showModal();
+}
+
+function applyPendingCommissionAmount() {
+  const form = $("#commissionPaymentForm");
+  const total = state.commissions?.partner_totals.find(item => item.partner_id === Number(form.elements.partner_id.value));
+  form.elements.amount.value = total?.pending_cents ? centsForInput(total.pending_cents) : "";
+}
+
+async function saveCommissionPayment(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form));
+  try {
+    await api("/api/commission-payments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    $("#commissionPaymentDialog").close();
+    toast("Pagamento de comissão registrado.");
+    await loadCommissions();
+  } catch (error) { $("#commissionPaymentFormError").textContent = error.message; }
+}
+
+async function deleteCommissionPayment(id) {
+  if (!confirm("Excluir este pagamento de comissão? O valor voltará a aparecer como pendente.")) return;
+  try { await api(`/api/commission-payments/${id}`, { method: "DELETE" }); toast("Pagamento excluído."); await loadCommissions(); }
+  catch (error) { toast(error.message, "error"); }
+}
 
 async function importWorkbook(event) {
   const file = event.target.files[0]; if (!file) return;
   try {
-    const result = await api("/api/import/nfse", { method: "POST", headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "X-Filename": file.name }, body: await file.arrayBuffer() });
+    const headers = { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "X-Filename": file.name };
+    if (state.company !== "all") headers["X-Company-Id"] = state.company;
+    const result = await api("/api/import/nfse", { method: "POST", headers, body: await file.arrayBuffer() });
     toast(`${result.inserted} registros importados; ${result.ignored} já existentes.`);
     state.metadata = await api("/api/meta"); populateDataLists(); await loadCurrentView();
   } catch (error) { toast(error.message, "error"); }
   finally { event.target.value = ""; }
+}
+
+function formatDateTime(value) {
+  if (!value) return "Nunca entrou";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(date);
+}
+
+async function loadUsers() {
+  const users = await api("/api/users");
+  state.users = users;
+  $("#usersTable").innerHTML = users.length ? users.map(user => `
+    <tr>
+      <td class="user-name"><strong>${escapeHtml(user.name)}</strong><small>Cadastrado em ${formatDateTime(user.created_at)}</small></td>
+      <td>${escapeHtml(user.username)}</td>
+      <td><span class="badge ${user.role}">${user.role === "admin" ? "Administrador" : "Usuário comum"}</span></td>
+      <td><span class="badge ${user.is_active ? "active" : "inactive"}">${user.is_active ? "Ativo" : "Inativo"}</span></td>
+      <td>${formatDateTime(user.last_login_at)}</td>
+      <td><div class="row-actions"><button data-edit-user="${user.id}">Editar</button></div></td>
+    </tr>`).join("") : `<tr><td colspan="6" class="empty-state">Nenhum usuário cadastrado.</td></tr>`;
+  $$('[data-edit-user]').forEach(button => button.addEventListener("click", () => openUserDialog(Number(button.dataset.editUser))));
+}
+
+function openUserDialog(id = null) {
+  const form = $("#userForm");
+  form.reset();
+  $("#userFormError").textContent = "";
+  form.elements.id.value = id || "";
+  form.elements.role.value = "user";
+  form.elements.is_active.checked = true;
+  form.elements.password.required = !id;
+  $("#passwordHelp").textContent = id
+    ? "Deixe em branco para manter a senha atual."
+    : "Obrigatória, com no mínimo 8 caracteres.";
+  $("#userDialogTitle").textContent = id ? "Editar usuário" : "Novo usuário";
+  if (id) {
+    const user = state.users.find(item => item.id === id);
+    if (!user) return;
+    form.elements.name.value = user.name;
+    form.elements.username.value = user.username;
+    form.elements.role.value = user.role;
+    form.elements.is_active.checked = user.is_active;
+  }
+  $("#userDialog").showModal();
+}
+
+async function saveUser(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (event.submitter?.value === "cancel") { $("#userDialog").close(); return; }
+  const payload = Object.fromEntries(new FormData(form));
+  const id = payload.id;
+  delete payload.id;
+  payload.is_active = form.elements.is_active.checked;
+  if (!payload.password) delete payload.password;
+  try {
+    await api(id ? `/api/users/${id}` : "/api/users", {
+      method: id ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    $("#userDialog").close();
+    toast(id ? "Usuário atualizado." : "Usuário criado com sucesso.");
+    await loadUsers();
+  } catch (error) { $("#userFormError").textContent = error.message; }
 }
 
 function debounce(callback, delay) {
